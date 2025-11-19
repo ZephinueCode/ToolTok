@@ -10,7 +10,7 @@ from .utils.action import ACTION_BASE_EMBEDDING
 from .train.grpo_1 import run_grpo_1
 
 # Import Training Function
-from .train.sft import run_sft_1
+from .train.sft import run_sft
 
 if __name__ == "__main__":
     
@@ -68,7 +68,7 @@ if __name__ == "__main__":
     
     # Run the training pipeline
     # Input: INIT_MODEL_PATH -> Output: SFT_1_OUTPUT_PATH
-    run_sft_1()
+    run_sft()
     
     print("\n" + "="*60)
     print(f"PHASE 1 COMPLETE. Model saved to:\n{HP.SFT_OUTPUT_PATH}")

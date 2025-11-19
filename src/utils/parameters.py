@@ -15,11 +15,11 @@ class HYPERPARAMS:
     IMAGE_SIZE = 640
     
     # Optimization
-    SFT_LEARN_RATE = 1e-5
+    SFT_LEARN_RATE = 1.8e-5
     SFT_BATCH_SIZE = 4
     SFT_GRAD_ACCUM_STEPS = 4
     SFT_EPOCHS = 1
-    SFT_MAX_LENGTH = 512
+    SFT_MAX_LENGTH = 4096
     
     # Seeds
     SFT_SEED = 42
@@ -48,3 +48,14 @@ class HYPERPARAMS:
     
     # ================= TRAINING PARAMS FOR GRPO3 =================
     # GRPO3 (Hard navigating tasks with GUIOdyssey)
+    
+    # ================= EVALUATION PARAMS =================
+    VLM_API_KEY = "sk-e9d4a0b8248b4802b0458ca26612f25c"
+    VLM_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    BASELINE_MODEL_NAME = "qwen3-vl-235b-a22b-instruct" 
+    
+    # Evaluation Config
+    EVAL_DATA_PATH = "rootsautomation/ScreenSpot"
+    EVAL_DATASET_SIZE = 50 # Number of samples to test
+    EVAL_MAX_STEPS = 10
+    EVAL_OUTPUT_DIR = "./eval_results"

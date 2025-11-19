@@ -184,7 +184,7 @@ class ToolGRPOTrainer(GRPOTrainer):
                         "role": "user",
                         "content": [
                             {"type": "image", "image": step_image},
-                            {"type": "text", "text": f"[Action] Perform a step for the following action: {traj.global_question}\nCurrent Cursor: {curr_cursor}"}
+                            {"type": "text", "text": f"<ACTION> Perform a step for the following action: {traj.global_question}\nCurrent Cursor: {curr_cursor}"}
                         ]
                     }
                 ]

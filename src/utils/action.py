@@ -12,6 +12,10 @@ ACTION_BASE_EMBEDDING = {
     # ===========================
     # Movement (Cursor Control)
     # ===========================
+    
+    # Identifier for needing action currently.
+    "<ACTION>": ["action", "do", "perform", "conduct", "act"],
+    
     # Up
     "<MOVE_UP_FAR>":   ["move", "cursor", "up", "far", "high"],
     "<MOVE_UP_MID>":   ["move", "cursor", "up", "medium", "middle"],
