@@ -6,8 +6,8 @@ import os
 from .parameters import HYPERPARAMS as HP
 
 # ================= CONFIGURATION =================
-OUTPUT_FILE = HP.SFT_1_DATA_PATH
-SAMPLES_PER_TOKEN = HP.SFT_1_SAMPLES_PER_ACTION
+OUTPUT_FILE = HP.SFT_DATA_PATH
+SAMPLES_PER_TOKEN = HP.SFT_SAMPLES_PER_ACTION
 
 # Ensure output directory exists
 os.makedirs(os.path.dirname(OUTPUT_FILE), exist_ok=True)
@@ -45,6 +45,9 @@ VOCAB = {
     "nav_verb": [
         "Go", "Navigate", "Return", "Jump", "Switch", "Head"
     ],
+    "type_verb": [
+        "Type", "Enter", "Input", "Write", "Fill in", "Submit"
+    ],
     
     # Adverbs/Adjectives for Distance (Expanded)
     "far_desc": [
@@ -78,14 +81,13 @@ VOCAB = {
         "horizontally right", "forwards (direction)"
     ],
 
-    # Text Contexts
-    "text_start": [
-        "Start typing", "Begin input", "Activate the text field", "Focus on the input box", "Ready to write",
-        "Initiate text entry", "Open the keyboard", "Click to type", "Enter text mode"
-    ],
-    "text_end": [
-        "Finish typing", "Complete input", "Stop writing", "Confirm text", "Exit text mode",
-        "Submit the text", "Close the keyboard", "Done editing", "Finalize entry"
+    # Text Contexts (Specific strings to type)
+    "text_content": [
+        "Hello world", "search query", "user@example.com", "password123", 
+        "Python tutorial", "New York City", "The quick brown fox", 
+        "Meeting notes", "TODO list", "123-456-7890", 
+        "Buy milk", "Address: 123 Main St", "Confirm", "John Doe",
+        "react native", "chmod +x script.sh", "Funny cat videos"
     ],
     
     # Termination
@@ -97,18 +99,21 @@ VOCAB = {
 
 # Templates to wrap the core instruction
 TEMPLATES = [
-    "Perform a step for the following action: {instruction}",
-    "Perform a step for the following action: {instruction}",
-    "Perform a step for the following action: {instruction}", # Weighting higher
-    "Please {instruction_lower}",
-    "Action: {instruction}",
-    "{instruction}",
-    "Execute: {instruction}",
-    "I need you to {instruction_lower}",
-    "Task: {instruction}",
+    "[Action] Perform a step for the following action: {instruction}",
+    "[Action] Perform a step for the following action: {instruction}",
+    "[Action] Perform a step for the following action: {instruction}",
+    "[Action] Perform a step for the following action: {instruction}",
+    "[Action] Perform a step for the following action: {instruction}", # Weighting higher
+    "[Action] Please {instruction_lower}",
+    "[Action] Action: {instruction}",
+    "[Action] Execute: {instruction}",
+    "[Action] I need you to {instruction_lower}",
+    "[Action] Task: {instruction}",
 ]
 
 # ================= TOKEN DEFINITIONS & METADATA =================
+# Note: For TEXT_INPUT_SEQUENCE, the key is a placeholder for generation logic,
+# not the literal token output.
 TOKEN_META = {
     # --- Movement ---
     "<MOVE_UP_FAR>":    {"type": "move", "dir": "up", "dist": "far"},
@@ -141,9 +146,8 @@ TOKEN_META = {
     "<SCROLL_LEFT>":    {"type": "scroll", "dir": "left"},
     "<SCROLL_RIGHT>":   {"type": "scroll", "dir": "right"},
 
-    # --- Text ---
-    "<TEXT_START>":     {"type": "text", "mode": "start"},
-    "<TEXT_END>":       {"type": "text", "mode": "end"},
+    # --- Text (Combined) ---
+    "TEXT_INPUT_SEQUENCE": {"type": "text_seq"},
 
     # --- Termination ---
     "<END_ACTION>":     {"type": "end"},
@@ -151,7 +155,10 @@ TOKEN_META = {
 
 # ================= GENERATION LOGIC =================
 
-def generate_instruction(meta):
+def generate_sample(token_key, meta):
+    """
+    Returns tuple: (instruction_text, assistant_response_string)
+    """
     t_type = meta["type"]
     
     if t_type == "move":
@@ -159,54 +166,71 @@ def generate_instruction(meta):
         direction = random.choice(VOCAB[meta["dir"]])
         distance_desc = random.choice(VOCAB[f"{meta['dist']}_desc"])
         
-        # Expanded Structures:
         case = random.randint(1, 5)
         if case == 1:
-            return f"{verb} {direction} {distance_desc}"
+            instr = f"{verb} {direction} {distance_desc}"
         elif case == 2:
-            return f"{verb} the cursor {distance_desc} {direction}"
+            instr = f"{verb} the cursor {distance_desc} {direction}"
         elif case == 3:
-            return f"{distance_desc} {verb.lower()} {direction}"
+            instr = f"{distance_desc} {verb.lower()} {direction}"
         elif case == 4:
-            return f"Make a {verb.lower()} {direction} {distance_desc}"
+            instr = f"Make a {verb.lower()} {direction} {distance_desc}"
         else:
-            return f"{verb} {direction}, make it {distance_desc}"
+            instr = f"{verb} {direction}, make it {distance_desc}"
+        
+        return instr, token_key
 
     elif t_type == "click":
         target = random.choice(VOCAB["ui_element"])
         if meta["mode"] == "short":
             verb = random.choice(VOCAB["click_verb"])
-            return f"{verb} the {target}"
+            instr = f"{verb} the {target}"
         else:
             verb = random.choice(VOCAB["long_click_verb"])
-            return f"{verb} on the {target}"
+            instr = f"{verb} on the {target}"
+        return instr, token_key
 
     elif t_type == "scroll":
         verb = random.choice(VOCAB["scroll_verb"])
         direction = random.choice(VOCAB[meta["dir"]])
         target = random.choice(VOCAB["container"])
-        return f"{verb} {direction} the {target}"
+        instr = f"{verb} {direction} the {target}"
+        return instr, token_key
 
     elif t_type == "nav":
         if meta["mode"] == "back":
-            return random.choice(["Go back", "Return to previous page", "Navigate back", "Click the back button", "Retreat to last screen"])
+            instr = random.choice(["Go back", "Return to previous page", "Navigate back", "Click the back button", "Retreat to last screen"])
         else:
-            return random.choice(["Go to home", "Return to dashboard", "Navigate to the main menu", "Press the home button", "Jump to start"])
+            instr = random.choice(["Go to home", "Return to dashboard", "Navigate to the main menu", "Press the home button", "Jump to start"])
+        return instr, token_key
 
-    elif t_type == "text":
-        if meta["mode"] == "start":
-            return random.choice(VOCAB["text_start"])
+    elif t_type == "text_seq":
+        # Generate content
+        content = random.choice(VOCAB["text_content"])
+        verb = random.choice(VOCAB["type_verb"])
+        target = random.choice(VOCAB["ui_element"])
+        
+        # Instruction variants
+        case = random.randint(1, 3)
+        if case == 1:
+            instr = f"{verb} '{content}'"
+        elif case == 2:
+            instr = f"{verb} '{content}' into the {target}"
         else:
-            return random.choice(VOCAB["text_end"])
+            instr = f"Input the text '{content}'"
+            
+        # Response: <TEXT_START> content <TEXT_END>
+        response = f"<TEXT_START> {content} <TEXT_END>"
+        return instr, response
 
     elif t_type == "end":
-        return random.choice(VOCAB["end_action"])
+        instr = random.choice(VOCAB["end_action"])
+        return instr, token_key
     
-    return "Perform action"
+    return "Perform action", token_key
 
 def apply_template(instruction):
     template = random.choice(TEMPLATES)
-    # Handle case capitalization based on template position
     if "{instruction_lower}" in template:
         return template.format(instruction_lower=instruction.lower())
     return template.format(instruction=instruction)
@@ -214,25 +238,25 @@ def apply_template(instruction):
 # ================= MAIN EXECUTION =================
 
 def main():
-    print(f"Generating {SAMPLES_PER_TOKEN} samples per token for {len(TOKEN_META)} tokens...")
+    print(f"Generating {SAMPLES_PER_TOKEN} samples per token logic...")
     
     count = 0
     with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-        # Iterate through each defined token
-        for token, meta in TOKEN_META.items():
+        # Iterate through each defined token configuration
+        for token_key, meta in TOKEN_META.items():
             for _ in range(SAMPLES_PER_TOKEN):
                 
-                # 1. Generate the core natural language instruction
-                core_instruction = generate_instruction(meta)
+                # 1. Generate Core Instruction & Response
+                core_instruction, assistant_response = generate_sample(token_key, meta)
                 
-                # 2. Apply formatting template
+                # 2. Apply formatting template to instruction
                 user_content = apply_template(core_instruction)
                 
                 # 3. Create JSON structure
                 record = {
                     "messages": [
                         {"role": "user", "content": user_content},
-                        {"role": "assistant", "content": token}
+                        {"role": "assistant", "content": assistant_response}
                     ]
                 }
                 

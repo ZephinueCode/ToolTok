@@ -17,12 +17,6 @@ def add_new_tokens(model, processor, base_embedding=ACTION_BASE_EMBEDDING):
     
     tokenizer = processor.tokenizer
     
-    # Ensure we are operating on the text backbone
-    if hasattr(model, 'model'):
-        text_model = model.model
-    else:
-        text_model = model
-    
     # 1. Add tokens to tokenizer
     new_tokens = list(base_embedding.keys())
     existing_tokens = set(tokenizer.get_vocab().keys())
@@ -38,8 +32,14 @@ def add_new_tokens(model, processor, base_embedding=ACTION_BASE_EMBEDDING):
     
     # 3. Untie LM Head from Input Embeddings
     # We do this IMMEDIATELY after resize to ensure independent training later.
-    input_embeddings = text_model.get_input_embeddings()
-    output_embeddings = text_model.get_output_embeddings()
+    
+    # CORRECTED: Get input from backbone (or model), BUT output MUST come from the parent model wrapper
+    input_embeddings = model.get_input_embeddings()
+    output_embeddings = model.get_output_embeddings()
+    
+    # Debug print to confirm layers are found
+    print(f"[Debug] Input Layer: {type(input_embeddings)}")
+    print(f"[Debug] Output Layer: {type(output_embeddings)}")
     
     if output_embeddings is not None and output_embeddings.weight is input_embeddings.weight:
         print("[Tokenizer] Weight Tying detected. Untying LM Head from Input Embeddings...")
@@ -52,8 +52,9 @@ def add_new_tokens(model, processor, base_embedding=ACTION_BASE_EMBEDDING):
     # 4. Smart Initialization (Semantic Anchoring)
     print(f"[Tokenizer] Initializing {len(base_embedding)} tokens (Input & Output layers)...")
     
-    input_embeddings = text_model.get_input_embeddings()
-    output_embeddings = text_model.get_output_embeddings()
+    # Refresh references just in case
+    input_embeddings = model.get_input_embeddings()
+    output_embeddings = model.get_output_embeddings()
     
     with torch.no_grad():
         for new_token, base_words in base_embedding.items():
@@ -76,8 +77,8 @@ def add_new_tokens(model, processor, base_embedding=ACTION_BASE_EMBEDDING):
                 input_embeddings.weight[new_token_id] = smart_init_emb
                 
                 # Initialize Output Embedding (The Prediction)
-                # Since we untied them, we must initialize output explicitely too
-                output_embeddings.weight[new_token_id] = smart_init_emb
+                if output_embeddings is not None:
+                    output_embeddings.weight[new_token_id] = smart_init_emb
             else:
                 print(f"Warning: No anchors found for {new_token}")
     

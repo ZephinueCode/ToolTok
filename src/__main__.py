@@ -7,9 +7,10 @@ from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 from .utils.parameters import HYPERPARAMS as HP
 from .utils.tokenizer import add_new_tokens, save_model
 from .utils.action import ACTION_BASE_EMBEDDING
+from .train.grpo_1 import run_grpo_1
 
 # Import Training Function
-from .train.sft_1 import run_sft_1
+from .train.sft import run_sft_1
 
 if __name__ == "__main__":
     
@@ -70,5 +71,21 @@ if __name__ == "__main__":
     run_sft_1()
     
     print("\n" + "="*60)
-    print(f"PHASE 1 COMPLETE. Model saved to:\n{HP.SFT_1_OUTPUT_PATH}")
+    print(f"PHASE 1 COMPLETE. Model saved to:\n{HP.SFT_OUTPUT_PATH}")
     print("="*60 + "\n")
+    
+    # =========================================================================
+    # PHASE 2: GRPO 1 (Visual Grounding)
+    # =========================================================================
+    '''
+    print("\n" + "="*60)
+    print("PHASE 2: GRPO 1 - Visual Grounding")
+    print("Action: Reinforcement Learning on ScreenSpot to learn cursor control.")
+    print("="*60 + "\n")
+    
+    run_grpo_1()
+    
+    print("\n" + "="*60)
+    print(f"PHASE 2 COMPLETE. Model saved to:\n{HP.GRPO1_OUTPUT_PATH}")
+    print("="*60 + "\n")
+    '''
