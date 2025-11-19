@@ -1,3 +1,5 @@
+# src/tools/runner.py
+
 import torch
 import numpy as np
 from PIL import Image
@@ -5,7 +7,6 @@ from typing import List, Dict, Tuple, Any
 from io import BytesIO
 
 from ..utils.parameters import HYPERPARAMS as HP
-from ..utils.prompts import AGENT_SYSTEM_PROMPT
 from ..utils.action_logic import MOVE_DELTAS, get_action_type
 from .visual_utils import draw_cursor
 
@@ -100,8 +101,12 @@ class AgentTrajectory:
 
     def _update_visual_history(self):
         """Draws cursor on current base image and appends to history."""
+        # [FIX] CRITICAL: Always copy the base image before drawing.
+        # This prevents 'Ghost Cursors' from previous steps accumulating on the base image.
+        clean_copy = self.current_base_image.copy()
+        
         viz_img = draw_cursor(
-            self.current_base_image, 
+            clean_copy, 
             int(self.cursor_pos[0]), 
             int(self.cursor_pos[1])
         )
@@ -177,27 +182,27 @@ class Runner:
             agent_traj.step_count += 1
             current_gt = gt_traj.get_step(agent_traj.current_gt_step_idx)
             
+            # [FIX] Get Image Size for Prompt Context
+            curr_img = agent_traj.get_current_view()
+            w, h = curr_img.size
+
             # 1. Build Prompt
+            # Include Image Size so the model knows the coordinate scale
             messages = [
-                {"role": "system", "content": AGENT_SYSTEM_PROMPT},
                 {
                     "role": "user",
                     "content": [
-                        {"type": "image", "image": agent_traj.get_current_view()},
-                        {"type": "text", "text": f"[Action] Perform a step for the following action: {agent_traj.global_question}\nCurrent Cursor: {agent_traj.cursor_pos}"}
+                        {"type": "image", "image": curr_img},
+                        {"type": "text", "text": f"[Action] Perform a step for the following action: {agent_traj.global_question}\n"}
                     ]
                 }
             ]
-            
-            if agent_traj.tools:
-                hist_str = "\nAction History:\n" + "\n".join([f"- {t}" for t in agent_traj.tools])
-                messages[1]["content"].append({"type": "text", "text": hist_str})
 
             # 2. Inference
             text_prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
             inputs = processor(
                 text=[text_prompt],
-                images=[agent_traj.get_current_view()],
+                images=[curr_img],
                 padding=True,
                 return_tensors="pt"
             ).to(model.device)

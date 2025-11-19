@@ -133,4 +133,4 @@ def evaluate_model(mode="trained", num_samples=None):
     print(f"Results saved to {result_dir}")
 
 if __name__ == "__main__":
-    evaluate_model(mode="trained", num_samples=HP.EVAL_DATASET_SIZE)
+    evaluate_model(mode="api_baseline", num_samples=HP.EVAL_DATASET_SIZE)

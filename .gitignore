@@ -6,3 +6,5 @@ __pycache__/
 checkpoints/*
 data/*
 .vscode/
+
+eval_results/*

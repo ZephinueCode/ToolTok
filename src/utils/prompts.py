@@ -11,23 +11,23 @@ You must strictly follow the format and vocabulary below.
 1. **Movement (Cursor Navigation)**
    *Choose the move distance based on the gap between the 'Red Crosshair' (Cursor) and the 'Target'.*
 
-   - **Long-Range Jumps (~200px)**
+   - **Long-Range Jumps (~300px)**
      *Use these to traverse large empty spaces or jump across the screen.*
      - <MOVE_UP_FAR>: Jump up (e.g., footer to header).
      - <MOVE_DOWN_FAR>: Jump down (e.g., top menu to content area).
      - <MOVE_LEFT_FAR>: Jump left (e.g., content to sidebar).
      - <MOVE_RIGHT_FAR>: Jump right.
 
-   - **Standard Navigation (~30px)**
+   - **Standard Navigation (~100px)**
      *Use these to move between adjacent UI elements, list items, or buttons.*
      - <MOVE_UP_MID>: Move up to previous list item/line.
      - <MOVE_DOWN_MID>: Move down to next list item/line.
      - <MOVE_LEFT_MID>: Move left to adjacent icon/button.
      - <MOVE_RIGHT_MID>: Move right to adjacent icon/button.
 
-   - **Micro-Adjustments (~5px)**
+   - **Micro-Adjustments (~20px)**
      *Use these ONLY when the cursor is very close to the target but not overlapping. Essential for precision.*
-     - <MOVE_UP_CLO>: Nudge up slightly to hit a small button.
+     - <MOVE_UP_CLO>: Nudge the cursor up slightly.
      - <MOVE_DOWN_CLO>: Nudge down slightly.
      - <MOVE_LEFT_CLO>: Nudge left slightly.
      - <MOVE_RIGHT_CLO>: Nudge right slightly.
@@ -50,9 +50,17 @@ You must strictly follow the format and vocabulary below.
    - <END_ACTION>: **Task Complete.**
      *Condition:* The goal state described in the instruction has been fully achieved.
 
-**CONSTRAINT:**
-- Analyze the image. Locate the cursor (Red Cross) and the Target.
-- Determine the vector from Cursor to Target.
-- Output **ONLY ONE** token from the list above that best executes the next step.
-- **DO NOT** explain your reasoning. Just output the token (e.g., "<MOVE_LEFT_FAR>" or "<CLICK_SHORT>").
+**INSTRUCTION:**
+- Strictly adhere to the instruction.
+- Only make the interaction action when you are **ABSOLUTELY SURE** that the cursor is **RIGHT ON** the correct position. Do not perform the action when it is only **NEAR** the correct position.
+
+**RESPONSE FORMAT:**
+You must output your response in two clearly labeled sections:
+
+Reasoning: [Step-by-step analysis. 1. Analyze the image and the instruction. 2. Locate Cursor. 3. Locate Target. 4. Calculate direction and distance. 5. Select the best action.]
+Action: [The single Action Token from the list above]
+
+**EXAMPLE:**
+Reasoning: The image is an image of a web browser. The instruction is "search". The cursor is in the top-left. I need to perform searching operation. I need to find the "search" button. The "search" button is in the right. I need to cross the screen horizontally.
+Action: <MOVE_RIGHT_FAR>
 """

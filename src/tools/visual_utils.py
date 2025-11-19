@@ -1,6 +1,6 @@
 from PIL import Image, ImageDraw, ImageFont
 
-def draw_cursor(image: Image.Image, x: int, y: int, color: str = "red", radius: int = 10) -> Image.Image:
+def draw_cursor(image: Image.Image, x: int, y: int, color: str = "red", radius: int = 40) -> Image.Image:
     """
     Draws a visual cursor on the image at coordinates (x, y) with label 'cursor'.
     Operates directly on the original image size.
@@ -15,11 +15,11 @@ def draw_cursor(image: Image.Image, x: int, y: int, color: str = "red", radius: 
     
     # 1. Crosshair lines
     line_len = radius * 1.5
-    draw.line([(x - line_len, y), (x + line_len, y)], fill=color, width=4)
-    draw.line([(x, y - line_len), (x, y + line_len)], fill=color, width=4)
+    draw.line([(x - line_len, y), (x + line_len, y)], fill=color, width=10)
+    draw.line([(x, y - line_len), (x, y + line_len)], fill=color, width=10)
     
     # 2. Circle
-    draw.ellipse([(x - radius, y - radius), (x + radius, y + radius)], outline=color, width=4)
+    draw.ellipse([(x - radius, y - radius), (x + radius, y + radius)], outline=color, width=10)
     
     # 3. Text Label
     try:
@@ -89,10 +89,10 @@ def visualize_trajectory(base_image: Image.Image, cursor_path: list, actions: li
 
         # End Point / Click Point (Red Crosshair)
         ex, ey = cursor_path[-1]
-        r = 10
-        draw.line([ex-r, ey-r, ex+r, ey+r], fill="red", width=4)
-        draw.line([ex-r, ey+r, ex+r, ey-r], fill="red", width=4)
-        draw.ellipse([ex-r, ey-r, ex+r, ey+r], outline="red", width=3)
+        r = 40
+        draw.line([ex-r, ey-r, ex+r, ey+r], fill="red", width=10)
+        draw.line([ex-r, ey+r, ex+r, ey-r], fill="red", width=10)
+        draw.ellipse([ex-r, ey-r, ex+r, ey+r], outline="red", width=10)
 
     # 5. Add Border based on Success/Fail
     border_color = "#00FF00" if success else "#FF0000"
