@@ -8,3 +8,4 @@ data/*
 .vscode/
 
 eval_results/*
+results/*

@@ -74,10 +74,10 @@ if __name__ == "__main__":
     print(f"PHASE 1 COMPLETE. Model saved to:\n{HP.SFT_OUTPUT_PATH}")
     print("="*60 + "\n")
     
+    '''
     # =========================================================================
     # PHASE 2: GRPO 1 (Visual Grounding)
     # =========================================================================
-    '''
     print("\n" + "="*60)
     print("PHASE 2: GRPO 1 - Visual Grounding")
     print("Action: Reinforcement Learning on ScreenSpot to learn cursor control.")
@@ -89,3 +89,4 @@ if __name__ == "__main__":
     print(f"PHASE 2 COMPLETE. Model saved to:\n{HP.GRPO1_OUTPUT_PATH}")
     print("="*60 + "\n")
     '''
+    

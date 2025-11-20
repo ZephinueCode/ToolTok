@@ -1,69 +1,138 @@
 # src/train/reward.py
 
-from typing import List
-# Assuming AgentTrajectory is imported or we treat it as a duck-typed object
-# from ..tools.runner import AgentTrajectory 
+import math
+from typing import List, Dict, Any
+
+def compute_euclidean_distance(pos1, pos2):
+    return math.hypot(pos1[0] - pos2[0], pos1[1] - pos2[1])
 
 def compute_reward(agent_traj) -> float:
     """
-    Computes scalar reward based on AgentTrajectory status and step count.
+    Computes scalar reward based on:
+    1. Progress Credit: (Completed Steps / Total GT Steps) * 100
+    2. Status & Efficiency: Penalties for Invalid actions, Wrong Types, Timeouts.
+    3. Spatial Accuracy (Dynamic): 
+       - Close Miss (<50px): Better than Timeout (Encourage rational confidence).
+       - Far Miss (>50px): Worse than Timeout (Discourage blind guessing).
+    4. Shaping: Distance improvement and absolute proximity.
     
     Status Codes (agent_traj.failed):
-    - 0: Success (All GT steps completed, END_ACTION outputted)
-    - 1: Invalid Token (Hallucination)
-    - 2: Wrong Type (e.g., Moving when should click - logic dependent)
-    - 3: Wrong Position (Clicked outside target bbox)
-    - 4: No Stop / Timeout (Max steps reached or stopped early)
-    
-    Scoring Rules:
-    - Success: 100 - steps
-    - Invalid: -100 + (Progress% * 100)
-    - Wrong Type: -50 + (Progress% * 100)
-    - Wrong Pos: -30 + (Progress% * 100)
-    - No Stop: 50 - steps (Positive reward for partial correctness, heavily penalized by steps)
+    - 0: Success
+    - 1: Invalid Token
+    - 2: Wrong Action Type
+    - 3: Wrong Position (Miss)
+    - 4: Timeout
     """
     
-    # Safeguard against division by zero if total_gt_steps is not set properly
-    total_gt = getattr(agent_traj, 'total_gt_steps', 1)
-    passed_gt = getattr(agent_traj, 'gt_steps_passed', 0)
-    step_count = getattr(agent_traj, 'step_count', 0)
-    
-    # Calculate Progress Bonus (0 to 100)
-    if total_gt > 0:
-        progress_bonus = (passed_gt / total_gt) * 100.0
-    else:
-        progress_bonus = 0.0
-
-    # Step Penalty (Encourage efficiency)
-    step_penalty = step_count * 1.0
-    
     status = agent_traj.failed
+    steps = agent_traj.step_count
     
-    # 1. Success
-    if status == 0:
-        return 100.0 - step_penalty
-        
-    # 2. Invalid Token
-    elif status == 1:
-        return -100.0 + progress_bonus
-        
-    # 3. Wrong Tool Type
-    elif status == 2:
-        return -50.0 + progress_bonus
-        
-    # 4. Wrong Position (Missed Target)
-    elif status == 3:
-        return -30.0 + progress_bonus
-        
-    # 5. No Stop / Timeout / Incomplete
-    # (User specified positive base 50 here)
-    elif status == 4:
-        return 50.0 - step_penalty
+    # ============================================================
+    # 0. Context Extraction
+    # ============================================================
+    # Get total steps from the trajectory object
+    total_gt_steps = getattr(agent_traj, 'total_gt_steps', 1)
+    total_gt_steps = max(1, total_gt_steps) # Prevent div by zero
     
-    # Fallback
-    return 0.0
+    gt_steps_passed = agent_traj.gt_steps_passed
+    
+    # Calculate final distance to the CURRENT active target
+    final_dist = float('inf')
+    if hasattr(agent_traj, 'target_bbox') and agent_traj.target_bbox:
+        x1, y1, x2, y2 = agent_traj.target_bbox
+        tx, ty = (x1 + x2) // 2, (y1 + y2) // 2
+        
+        if hasattr(agent_traj, 'cursor_path') and agent_traj.cursor_path:
+            end_pos = agent_traj.cursor_path[-1]
+            final_dist = compute_euclidean_distance(end_pos, (tx, ty))
 
-def batch_compute_rewards(trajectories: List[object], **kwargs) -> List[float]:
+    # ============================================================
+    # 1. Progress Reward (Base Score)
+    # ============================================================
+    # Award points proportional to the completed portion of the task.
+    # e.g., 2/4 steps done = 50 points.
+    if status == 0:
+        base_score = 100.0
+    else:
+        base_score = (gt_steps_passed / total_gt_steps) * 100.0
+
+    # ============================================================
+    # 2. Status & Dynamic Penalty Logic
+    # ============================================================
+    status_score = 0.0
+    
+    if status == 0:
+        # Bonus for full completion
+        status_score = +10.0
+        
+    elif status == 1: 
+        # Invalid Token: Severe penalty to fix format
+        status_score = -100.0
+        
+    elif status == 2: 
+        # Wrong Action Type (e.g. Click instead of Scroll)
+        status_score = -50.0
+        
+    elif status == 4: 
+        # Timeout:
+        # Represents "Exploring but ran out of time". 
+        # We use this as a baseline (-15).
+        status_score = -15.0 
+        
+    elif status == 3: 
+        # Miss (Clicking at wrong location):
+        # LOGIC: Close Miss > Timeout > Far Miss
+        
+        NEAR_MISS_THRESHOLD = 50.0 # pixels
+        
+        if final_dist < NEAR_MISS_THRESHOLD:
+            # "Rational Confidence": The agent was very close. 
+            # Penalty (-5) is smaller (better) than Timeout (-15).
+            status_score = -5.0 
+        else:
+            # "Blind Guess": The agent clicked far away.
+            # Penalty (-60) is much larger (worse) than Timeout (-15).
+            # This encourages the agent to keep moving rather than guessing.
+            status_score = -60.0
+
+    # ============================================================
+    # 3. Efficiency Penalty
+    # ============================================================
+    # Small cost per step to encourage taking the shortest path.
+    step_penalty = steps * 0.5
+    
+    # ============================================================
+    # 4. Spatial Shaping (Dense Reward)
+    # ============================================================
+    spatial_reward = 0.0
+    
+    # Only calculate if we have a valid path and didn't crash (status 1)
+    if status != 1 and hasattr(agent_traj, 'cursor_path') and agent_traj.cursor_path:
+        # A. Relative Improvement
+        # Reward for getting closer compared to the starting point
+        start_pos = agent_traj.cursor_path[0]
+        if hasattr(agent_traj, 'target_bbox') and agent_traj.target_bbox:
+             # Re-calculate target center (tx, ty already defined above)
+             initial_dist = compute_euclidean_distance(start_pos, (tx, ty))
+             dist_improvement = initial_dist - final_dist
+             spatial_reward += dist_improvement * 0.1
+        
+        # B. Absolute Proximity
+        # Reward simply for ending up near the target, regardless of start.
+        max_screen_dist = 1414.0 # approx diagonal of 1000x1000
+        if final_dist < max_screen_dist:
+            # Linearly scale from 0 to +20 points based on closeness
+            proximity_score = 20.0 * (1.0 - (final_dist / max_screen_dist))
+            spatial_reward += proximity_score
+    
+    # ============================================================
+    # 5. Total Sum
+    # ============================================================
+    total_reward = base_score + status_score - step_penalty + spatial_reward
+    
+    return total_reward
+
+def batch_compute_rewards(trajectories: List[Any], **kwargs) -> List[float]:
     """
     Batch wrapper for reward computation.
     """

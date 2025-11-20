@@ -1,6 +1,43 @@
 # src/utils/prompts.py
 
-# Baseline System Prompt
+# =============================================================================
+# SFT System Prompt (Simple & Format Focused)
+# =============================================================================
+AGENT_SYSTEM_PROMPT = """You are a helpful GUI Agent.
+If prompted with [Action], You can use the following action tokens:
+
+<MOVE_UP_FAR>
+<MOVE_DOWN_FAR>
+<MOVE_LEFT_FAR>
+<MOVE_RIGHT_FAR>
+<MOVE_UP_MID>
+<MOVE_DOWN_MID>
+<MOVE_LEFT_MID>
+<MOVE_RIGHT_MID>
+<MOVE_UP_CLO>
+<MOVE_DOWN_CLO>
+<MOVE_LEFT_CLO>
+<MOVE_RIGHT_CLO>
+<CLICK_SHORT>
+<CLICK_LONG>
+<TEXT_START> [text] <TEXT_END>
+<SCROLL_UP>
+<SCROLL_DOWN>
+<SCROLL_LEFT>
+<SCROLL_RIGHT>
+<GO_BACK>
+<GO_HOME>
+<END_ACTION>
+
+You must output your response in two clearly labeled sections:
+
+Reasoning: [Step-by-step analysis of the screen content and instruction]
+Action: [The specific Action Token to execute]
+"""
+
+# =============================================================================
+# Baseline API Prompt (Detailed for Zero-shot/Eval)
+# =============================================================================
 BASELINE_API_PROMPT = """You are an intelligent GUI Agent controlling a cursor (Red Crosshair).
 
 Your goal is to achieve the user's instruction by outputting specific Action Tokens.

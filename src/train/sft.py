@@ -1,3 +1,5 @@
+# src/train/sft.py
+
 import json
 import torch
 import os
@@ -5,27 +7,130 @@ import random
 import math
 import numpy as np
 from torch.utils.data import Dataset
+from datasets import load_dataset
 from transformers import (
     Qwen3VLForConditionalGeneration, 
     AutoProcessor, 
     Trainer, 
     TrainingArguments
 )
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 from dataclasses import dataclass
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 from ..utils.parameters import HYPERPARAMS as HP
 from ..utils.action import ACTION_TOKENS
+from ..utils.prompts import AGENT_SYSTEM_PROMPT
 
 # =============================================================================
-# Helper Logic for Spatial Calculation (For Synthetic Data)
+# 0. Custom Trainer for Action Reweighting (FIXED)
 # =============================================================================
 
-def get_spatial_label(cursor_pos, target_center, intent):
+class WeightedActionTrainer(Trainer):
     """
-    Determines the correct token based on distance and intent.
+    Custom Trainer to solve 'Loss Dilution'.
+    Standard CrossEntropyLoss averages all tokens. Since Reasoning is long (~100 tokens)
+    and Action is short (1 token), the model ignores the Action accuracy.
+    
+    This Trainer forces a high weight (e.g., 20x) on the FINAL token (the Action).
     """
+    def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        labels = inputs.get("labels")
+        
+        # 1. Forward Pass
+        outputs = model(**inputs)
+        logits = outputs.get("logits")
+
+        # 2. Shift Logits and Labels for Causal LM
+        # logits[t] predicts labels[t+1]
+        shift_logits = logits[..., :-1, :].contiguous()
+        shift_labels = labels[..., 1:].contiguous()
+
+        # 3. Compute Per-Token Loss (No Reduction)
+        loss_fct = torch.nn.CrossEntropyLoss(reduction='none')
+        batch_size = labels.size(0)
+        
+        # [FIX] Get vocab_size dynamically from logits shape
+        # This avoids AttributeError if config doesn't expose vocab_size
+        vocab_size = shift_logits.size(-1)
+        
+        # Flatten dimensions to compute standard CE
+        raw_loss = loss_fct(
+            shift_logits.view(-1, vocab_size), 
+            shift_labels.view(-1)
+        )
+        # Reshape back to [Batch, Seq_Len-1]
+        raw_loss = raw_loss.view(batch_size, -1)
+
+        # 4. Build Weight Matrix
+        weights = torch.ones_like(raw_loss)
+        
+        # Config: How much more important is the Action token?
+        ACTION_WEIGHT = 20.0 
+        
+        # Iterate over batch to find the end of each sequence
+        for i in range(batch_size):
+            # Get indices of non-padding labels (-100 is padding/masked)
+            valid_mask = (shift_labels[i] != -100)
+            valid_indices = valid_mask.nonzero(as_tuple=False)
+            
+            if len(valid_indices) > 0:
+                # The last valid index is our Target Action Token 
+                # (Because the data generator puts "Action: <TOKEN>" at the very end)
+                last_idx = valid_indices[-1].item()
+                
+                # Apply weight to exactly this 1 token (Window = 1)
+                weights[i, last_idx] = ACTION_WEIGHT
+
+        # 5. Compute Weighted Mean
+        # Mask out padding tokens from the weights so they don't affect the mean
+        valid_tokens_mask = (shift_labels != -100).float()
+        final_weights = weights * valid_tokens_mask
+        
+        # Weighted Average = Sum(Loss * Weight) / Sum(Weights)
+        loss = (raw_loss * final_weights).sum() / (final_weights.sum() + 1e-8)
+
+        return (loss, outputs) if return_outputs else loss
+
+# =============================================================================
+# 1. Semantic Grid & Logic
+# =============================================================================
+
+def get_grid_region(x: int, y: int, width: int, height: int) -> str:
+    if y < height / 3: v_tag = "Top"
+    elif y < 2 * height / 3: v_tag = "Mid"
+    else: v_tag = "Bottom"
+    if x < width / 3: h_tag = "Left"
+    elif x < 2 * width / 3: h_tag = "Center"
+    else: h_tag = "Right"
+    
+    if v_tag == "Mid" and h_tag == "Center": return "Center"
+    elif v_tag == "Mid": return f"Mid-{h_tag}"
+    else: return f"{v_tag}-{h_tag}"
+
+def get_spatial_label_with_cot(cursor_pos, target_center, intent):
+    """
+    Generates reasoning + Special Token Action.
+    Ends exactly with the Action Token.
+    """
+    # === Navigation Logic ===
+    if intent["type"] == "nav":
+        mode = intent["mode"] # 'back' or 'home'
+        reasoning = "Reasoning: "
+        
+        if mode == "back":
+            reasoning += "The instruction is a system navigation command. "
+            reasoning += "I do not need to interact with a specific element on the screen. "
+            reasoning += "I need to return to the previous state. "
+            action = "<GO_BACK>"
+        elif mode == "home":
+            reasoning += "The instruction requires returning to the main interface. "
+            reasoning += "I need to exit the current application context. "
+            action = "<GO_HOME>"
+        
+        return f"{reasoning}\nAction: {action}"
+    
+    # === Interaction Logic ===
     cx, cy = cursor_pos
     tx, ty = target_center
     
@@ -33,191 +138,206 @@ def get_spatial_label(cursor_pos, target_center, intent):
     dy = ty - cy
     dist = math.hypot(dx, dy)
     
-    # Threshold for "arrived" (Hit logic)
-    HIT_THRESHOLD = 25
+    c_region = get_grid_region(cx, cy, HP.IMAGE_SIZE, HP.IMAGE_SIZE)
+    t_region = get_grid_region(tx, ty, HP.IMAGE_SIZE, HP.IMAGE_SIZE)
+    target_name = intent.get('name', 'target')
+    
+    reasoning = "Reasoning: "
+    reasoning += f"The cursor is currently in the **{c_region}** region. "
+    reasoning += f"The target '{target_name}' is located in the **{t_region}** region. "
+    
+    HIT_THRESHOLD = 30 
+    action = ""
     
     if dist < HIT_THRESHOLD:
-        # === ARRIVED STATE ===
+        reasoning += "The cursor is aligned with the target. "
         if intent["type"] == "click":
-            return "<CLICK_SHORT>"
+            reasoning += "I will perform a click."
+            action = "<CLICK_SHORT>"
         elif intent["type"] == "long_click":
-            return "<CLICK_LONG>"
+            reasoning += "I will perform a long press."
+            action = "<CLICK_LONG>"
         elif intent["type"] == "text":
-            return f"<TEXT_START> {intent['content']} <TEXT_END>"
-        else: # type == "move" (Just "Move to X")
-            return "<END_ACTION>" 
+            content = intent.get("content", "text")
+            reasoning += f"I need to type input."
+            action = f"<TEXT_START> {content} <TEXT_END>"
+        else:
+            reasoning += "Task complete."
+            action = "<END_ACTION>"
     else:
-        # === APPROACH STATE ===
+        # Describe Relative Direction
+        dir_desc = []
+        if abs(dx) > abs(dy):
+            if dx > 0: dir_desc.append("to the right")
+            else: dir_desc.append("to the left")
+        else:
+            if dy > 0: dir_desc.append("downwards")
+            else: dir_desc.append("upwards")
+            
+        reasoning += f"The target is {' '.join(dir_desc)} of the cursor. "
+        
         if abs(dx) > abs(dy):
             direction = "RIGHT" if dx > 0 else "LEFT"
             d_val = abs(dx)
-            suffix = "_FAR" if d_val > 150 else ("_MID" if d_val > 25 else "_CLO")
-            return f"<MOVE_{direction}{suffix}>"
+            suffix = "FAR" if d_val > 250 else ("MID" if d_val > 50 else "CLO")
+            
+            if suffix == "FAR": reasoning += "There is a significant gap. I need a large jump. "
+            elif suffix == "MID": reasoning += "The target is moderately away. I need a standard step. "
+            else: reasoning += "The target is very close. I need a micro-adjustment. "
+
+            action = f"<MOVE_{direction}_{suffix}>"
         else:
             direction = "DOWN" if dy > 0 else "UP"
             d_val = abs(dy)
-            suffix = "_FAR" if d_val > 150 else ("_MID" if d_val > 25 else "_CLO")
-            return f"<MOVE_{direction}{suffix}>"
+            suffix = "FAR" if d_val > 250 else ("MID" if d_val > 50 else "CLO")
+            
+            if suffix == "FAR": reasoning += "There is a significant gap. I need a large jump. "
+            elif suffix == "MID": reasoning += "The target is moderately away. I need a standard step. "
+            else: reasoning += "The target is very close. I need a micro-adjustment. "
+            
+            action = f"<MOVE_{direction}_{suffix}>"
+            
+    return f"{reasoning}\nAction: {action}"
 
 # =============================================================================
-# 1. Dataset: Tri-Modal Mixing
+# 2. Dataset
 # =============================================================================
 class SFTDataset(Dataset):
     def __init__(self, data_path):
+        # 1. Load Semantic Data
         if not os.path.exists(data_path):
-            print(f"[Warning] {data_path} not found.")
+            print(f"[Error] {data_path} not found.")
             self.jsonl_data = []
-            self.num_actions = 0
         else:
-            print(f"[Dataset] Loading SFT data from {data_path}...")
             with open(data_path, 'r', encoding='utf-8') as f:
                 self.jsonl_data = [json.loads(line) for line in f]
         
-        # Count action samples to balance synthetic data
-        self.num_actions = sum(1 for item in self.jsonl_data if item.get("data_type") == "action")
+        # 2. Load Backgrounds
+        self.bg_images = self._load_real_images(limit=200)
         
-        # Resources for synthetic generation
-        self.ui_names = ["submit", "cancel", "ok", "edit", "search", "home", "menu", "profile", "settings", "back"]
-        self.text_contents = ["hello", "1234", "user", "search query", "password"]
-        self.scroll_dirs = ["UP", "DOWN", "LEFT", "RIGHT"]
+        self.num_spatial = len(self.jsonl_data)
+        self.total_len = len(self.jsonl_data) + self.num_spatial
         
-        # Dataset Structure:
-        # Part 1 (0 ~ len-1): Original JSONL Data (Explanation + Semantic Action)
-        # Part 2 (len ~ end): Synthetic Spatial Data (Visual Grounding) - 1:1 ratio with Semantic Actions
-        self.jsonl_len = len(self.jsonl_data)
-        self.total_len = self.jsonl_len + self.num_actions
+        print(f"[Dataset] Total Samples: {self.total_len}")
         
-        print(f"[Dataset] JSONL Samples: {self.jsonl_len}")
-        print(f"[Dataset] Synthetic Spatial Samples to Generate: {self.num_actions}")
-        print(f"[Dataset] Total Training Samples: {self.total_len}")
+        self.ui_names = ["Submit", "Cancel", "Search", "Menu", "Settings", "Back"]
+        self.text_contents = ["hello", "test"]
+
+    def _load_real_images(self, limit=200):
+        images = []
+        try:
+            ds = load_dataset("rootsautomation/ScreenSpot", split="test", streaming=True)
+            iterator = iter(ds)
+            for _ in range(limit):
+                try:
+                    sample = next(iterator)
+                    img = sample['image'].convert("RGB").resize((HP.IMAGE_SIZE, HP.IMAGE_SIZE))
+                    images.append(img)
+                except StopIteration:
+                    break
+        except Exception as e:
+            pass
+        return images
+
+    def get_random_background(self):
+        if self.bg_images:
+            return random.choice(self.bg_images).copy()
+        return Image.new("RGB", (HP.IMAGE_SIZE, HP.IMAGE_SIZE), (0, 0, 0))
 
     def __len__(self):
         return self.total_len
 
     def __getitem__(self, idx):
-        # ===============================================================
-        # PART 1: JSONL DATA (Semantic Understanding)
-        # ===============================================================
-        if idx < self.jsonl_len:
+        # === TYPE 1: SEMANTIC (JSONL) ===
+        if idx < len(self.jsonl_data):
             item = self.jsonl_data[idx]
-            data_type = item.get("data_type", "action") # Default to action if missing
-            
+            data_type = item.get("data_type", "action")
             if data_type == "explanation":
-                # [STRATEGY] Text-Only Mode -> Use Pure Black Image
-                # This signals the model: "Ignore vision, focus on language definition"
                 image = Image.new('RGB', (HP.IMAGE_SIZE, HP.IMAGE_SIZE), color=(0, 0, 0))
-                
-            else: # data_type == "action"
-                # [STRATEGY] Semantic Action Mode -> Use Random Noise
-                # This signals: "Visuals are irrelevant noise, follow the text instruction pattern"
-                # Using noise prevents the model from overfitting to "Black = Explanation" logic 
-                # when it sees "Perform action" text.
+            else:
                 random_pixels = np.random.randint(0, 255, (HP.IMAGE_SIZE, HP.IMAGE_SIZE, 3), dtype=np.uint8)
                 image = Image.fromarray(random_pixels)
-            
-            return {
-                "messages": item["messages"],
-                "image": image
-            }
-            
-        # ===============================================================
-        # PART 2: SYNTHETIC DATA (Visual Grounding Logic)
-        # ===============================================================
+            msgs = [{"role": "system", "content": AGENT_SYSTEM_PROMPT}] + item["messages"]
+            return {"messages": msgs, "image": image}
+
+        # === TYPE 2: SPATIAL & NAVIGATION (Synthetic) ===
         else:
-            # Create a geometric scene
-            image = Image.new("RGB", (HP.IMAGE_SIZE, HP.IMAGE_SIZE), (0, 0, 0))
+            image = self.get_random_background()
             draw = ImageDraw.Draw(image)
-            margin = 60
+            margin = 50
             
-            # Random Cursor Position
-            cx = random.randint(margin, HP.IMAGE_SIZE - margin)
-            cy = random.randint(margin, HP.IMAGE_SIZE - margin)
+            task_rng = random.random()
             
-            # Draw Cursor (Red Cross)
-            draw.line([(cx-12, cy), (cx+12, cy)], fill="red", width=3)
-            draw.line([(cx, cy-12), (cx, cy+12)], fill="red", width=3)
-
-            # Decide Task: Scroll vs Interact
-            intent_cat = random.choice(["interact", "interact", "scroll"])
-            
-            # --- Type A: SCROLL (No Target) ---
-            if intent_cat == "scroll":
-                direction = random.choice(self.scroll_dirs)
-                label_token = f"<SCROLL_{direction}>"
+            # --- A. NAVIGATION TASK ---
+            if task_rng < 0.15:
+                intent_mode = random.choice(["back", "home"])
+                intent = {"type": "nav", "mode": intent_mode, "name": "System"}
                 
-                verbs = ["Scroll", "Swipe", "Pan"]
-                v = random.choice(verbs)
-                d_map = {"UP": "up", "DOWN": "down", "LEFT": "left", "RIGHT": "right"}
-                instr = f"{v} {d_map[direction]}"
+                if intent_mode == "back":
+                    instr = random.choice(["Go back", "Return to previous page", "Back"])
+                else:
+                    instr = random.choice(["Go home", "Return to main screen", "Home"])
                 
-                user_content = f"[Action] Perform a step for the following action: {instr}"
+                # Distractors only
+                cx = random.randint(margin, HP.IMAGE_SIZE - margin)
+                cy = random.randint(margin, HP.IMAGE_SIZE - margin)
+                for _ in range(random.randint(3, 6)):
+                    dx = random.randint(margin, HP.IMAGE_SIZE - margin)
+                    dy = random.randint(margin, HP.IMAGE_SIZE - margin)
+                    draw.rectangle([dx-30, dy-20, dx+30, dy+20], outline="blue", width=2)
+                
+                draw.line([(cx-15, cy), (cx+15, cy)], fill="red", width=4)
+                draw.line([(cx, cy-15), (cx, cy+15)], fill="red", width=4)
+                
+                tx, ty = 0, 0 
 
-            # --- Type B: INTERACT (With Target) ---
+            # --- B. INTERACTION TASK ---
             else:
-                intent_type = random.choice(["click", "click", "long_click", "text", "move"])
-                target_name = random.choice(self.ui_names)
-                text_payload = random.choice(self.text_contents) if intent_type == "text" else ""
-                
-                intent = {"type": intent_type, "content": text_payload}
-                
-                # Target Pos
                 tx = random.randint(margin, HP.IMAGE_SIZE - margin)
                 ty = random.randint(margin, HP.IMAGE_SIZE - margin)
+                target_name = random.choice(self.ui_names)
                 
-                # Draw Target (Green Box)
-                box = [tx-30, ty-20, tx+30, ty+20]
-                draw.rectangle(box, outline="green", width=3)
-                try:
-                    font = ImageFont.truetype("arial.ttf", 14)
-                except:
-                    font = ImageFont.load_default()
-                draw.text((tx-20, ty-35), target_name, fill="green", font=font)
-                
-                # Logic: Start ON target or AWAY?
-                is_overlap = random.random() < 0.5
-                if is_overlap:
-                    # Move cursor to target
-                    offset_x = random.randint(-10, 10)
-                    offset_y = random.randint(-10, 10)
-                    cx, cy = tx + offset_x, ty + offset_y
-                    
-                    # Redraw scene to reflect new cursor pos
-                    image.paste((0,0,0), (0,0, HP.IMAGE_SIZE, HP.IMAGE_SIZE))
-                    draw.rectangle(box, outline="green", width=3)
-                    draw.text((tx-20, ty-35), target_name, fill="green", font=font)
-                    draw.line([(cx-12, cy), (cx+12, cy)], fill="red", width=3)
-                    draw.line([(cx, cy-12), (cx, cy+12)], fill="red", width=3)
-                else:
-                    # Ensure distance
-                    while math.hypot(tx-cx, ty-cy) < 100:
-                        cx = random.randint(margin, HP.IMAGE_SIZE - margin)
-                        cy = random.randint(margin, HP.IMAGE_SIZE - margin)
+                cx = random.randint(margin, HP.IMAGE_SIZE - margin)
+                cy = random.randint(margin, HP.IMAGE_SIZE - margin)
+                if random.random() < 0.3: cx, cy = tx + random.randint(-5,5), ty + random.randint(-5,5)
 
-                # Generate Prompt
-                if intent_type == "click":
-                    instr = f"Click '{target_name}'"
-                elif intent_type == "long_click":
-                    instr = f"Long press {target_name}"
-                elif intent_type == "text":
-                    instr = f"Type '{text_payload}' into {target_name}"
-                else:
-                    instr = f"Move to {target_name}"
-                
-                user_content = f"[Action] Perform a step for the following action: {instr}"
-                label_token = get_spatial_label((cx, cy), (tx, ty), intent)
+                for _ in range(random.randint(2, 4)):
+                    dx = random.randint(margin, HP.IMAGE_SIZE - margin)
+                    dy = random.randint(margin, HP.IMAGE_SIZE - margin)
+                    if abs(dx - tx) > 60 or abs(dy - ty) > 60:
+                        draw.rectangle([dx-30, dy-20, dx+30, dy+20], outline="blue", width=2)
 
-            messages = [
-                {"role": "user", "content": user_content},
-                {"role": "assistant", "content": label_token}
+                draw.rectangle([tx-30, ty-20, tx+30, ty+20], outline="green", width=3)
+                try: draw.text((tx-20, ty-35), target_name, fill="green")
+                except: pass
+                
+                draw.line([(cx-15, cy), (cx+15, cy)], fill="red", width=4)
+                draw.line([(cx, cy-15), (cx, cy+15)], fill="red", width=4)
+
+                intent_type = random.choice(["click", "move", "text"])
+                intent = {"type": intent_type, "name": target_name}
+                
+                if intent_type == "text":
+                    intent["content"] = random.choice(self.text_contents)
+                    instr = f"Type '{intent['content']}' into {target_name}"
+                elif intent_type == "click":
+                    instr = f"Click {target_name}"
+                else:
+                    instr = f"Move cursor to {target_name}"
+
+            # Generate Response with Special Tokens
+            cot_response = get_spatial_label_with_cot((cx, cy), (tx, ty), intent)
+            
+            msgs = [
+                {"role": "system", "content": AGENT_SYSTEM_PROMPT},
+                {"role": "user", "content": f"[Action] {instr}"},
+                {"role": "assistant", "content": cot_response}
             ]
             
-            return {
-                "messages": messages,
-                "image": image
-            }
+            return {"messages": msgs, "image": image}
 
 # =============================================================================
-# 2. Collator
+# 3. Collator
 # =============================================================================
 @dataclass
 class SFTDataCollator:
@@ -228,25 +348,25 @@ class SFTDataCollator:
         images = []
         
         for feature in features:
-            messages = feature["messages"]
+            original_messages = feature["messages"]
             image = feature["image"]
             
-            formatted_messages = [
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "image", "image": image},
-                        {"type": "text", "text": messages[0]["content"]}
+            formatted_messages = []
+            for m in original_messages:
+                if m["role"] == "user":
+                    content = [
+                        {"type": "image"}, 
+                        {"type": "text", "text": m["content"]}
                     ]
-                },
-                {
-                    "role": "assistant",
-                    "content": [
-                        {"type": "text", "text": messages[1]["content"]}
-                    ]
-                }
-            ]
-            text = self.processor.apply_chat_template(formatted_messages, tokenize=False, add_generation_prompt=False)
+                    formatted_messages.append({"role": "user", "content": content})
+                else:
+                    formatted_messages.append(m)
+            
+            text = self.processor.apply_chat_template(
+                formatted_messages, 
+                tokenize=False, 
+                add_generation_prompt=False
+            )
             texts.append(text)
             images.append(image)
             
@@ -255,7 +375,7 @@ class SFTDataCollator:
             images=images,
             padding=True,
             truncation=True,
-            max_length=4096,
+            max_length=2048, 
             return_tensors="pt"
         )
         
@@ -268,63 +388,63 @@ class SFTDataCollator:
         for i in range(len(input_ids)):
             start_indices = (input_ids[i] == im_start_id).nonzero(as_tuple=True)[0]
             if len(start_indices) > 0:
-                assistant_start_idx = start_indices[-1]
-                mask_end = assistant_start_idx + 2
-                labels[i, :mask_end] = -100
-            else:
-                labels[i, :] = -100
-        
+                last_turn_idx = start_indices[-1]
+                labels[i, :last_turn_idx + 2] = -100
+            
         batch["labels"] = labels
         return batch
 
 # =============================================================================
-# 3. Model Setup
+# 4. Setup & Run
 # =============================================================================
+
 def setup_model_for_sft(model, processor):
-    print("[Model Setup] Configuring Surgical Partial Unfreeze for Embeddings...")
-    action_token_ids = [processor.tokenizer.convert_tokens_to_ids(t) for t in ACTION_TOKENS]
-    action_token_ids_tensor = torch.tensor(action_token_ids, device=model.device)
+    print("[Model Setup] Configuring Surgical Fine-Tuning strategy...")
+
+    # 1. Identify Target Token IDs (Special Tokens)
+    action_token_ids = [
+        processor.tokenizer.convert_tokens_to_ids(t) 
+        for t in ACTION_TOKENS
+    ]
+    action_token_ids = [idx for idx in action_token_ids if idx is not None]
     
-    model.enable_input_require_grads()
+    print(f"[Model Setup] Targeted Special Tokens: {len(action_token_ids)} tokens")
+    
+    target_indices_tensor = torch.tensor(action_token_ids)
+
+    # 2. Enable Gradients for Embeddings
+    model.enable_input_require_grads() 
     input_embeddings = model.get_input_embeddings()
     input_embeddings.weight.requires_grad = True
-    
-    def zero_out_non_action_grads(grad):
-        mask = torch.zeros_like(grad)
-        valid_indices = action_token_ids_tensor.to(grad.device)
-        mask[valid_indices] = 1.0
-        return grad * mask
 
-    input_embeddings.weight.register_hook(zero_out_non_action_grads)
-    
+    # 4. Configure Freezing
     trainable_params = 0
-    all_params = 0
+    total_params = 0
+    
     for name, param in model.named_parameters():
-        all_params += param.numel()
-        if "embed_tokens" in name or "wte" in name:
-            pass 
-        elif any(k in name for k in ["layers", "blocks", "transformer", "visual", "lm_head", "merger"]):
-            param.requires_grad = True
-            trainable_params += param.numel()
+        total_params += param.numel()
+        
+        if "visual" in name:
+            param.requires_grad = False # Freeze Vision
+        elif "embed_tokens" in name or "wte" in name:
+            # Physically unfrozen, but logically restricted by hook
+            hidden_dim = param.shape[1]
+            trainable_params += len(action_token_ids) * hidden_dim
         else:
-            param.requires_grad = False
+            param.requires_grad = True # Train LLM for Reasoning
+            trainable_params += param.numel()
 
-    print(f"[Model Setup] Trainable Params: {trainable_params:,} / {all_params:,}")
-
-# =============================================================================
-# 4. Main Run
-# =============================================================================
+    print(f"[Model Setup] Total Params: {total_params:,}")
+    print(f"[Model Setup] Trainable Params (Approx): {trainable_params:,}")
+    print("[Model Setup] Strategy: Vision(Freeze) + Embeds(Surgical) + LLM(Train)")
+    
 def run_sft():
-    print(f"[SFT] Loading initialized model from {HP.INIT_MODEL_PATH}")
-    try:
-        model = Qwen3VLForConditionalGeneration.from_pretrained(
-            HP.INIT_MODEL_PATH, device_map="auto", torch_dtype=torch.bfloat16, trust_remote_code=True
-        )
-        processor = AutoProcessor.from_pretrained(HP.INIT_MODEL_PATH, trust_remote_code=True)
-    except OSError:
-        print(f"[Error] Model not found at {HP.INIT_MODEL_PATH}")
-        return
-
+    print(f"[SFT] Loading from {HP.INIT_MODEL_PATH}")
+    model = Qwen3VLForConditionalGeneration.from_pretrained(
+        HP.INIT_MODEL_PATH, device_map="auto", torch_dtype=torch.bfloat16, trust_remote_code=True
+    )
+    processor = AutoProcessor.from_pretrained(HP.INIT_MODEL_PATH, trust_remote_code=True)
+    
     setup_model_for_sft(model, processor)
     
     train_dataset = SFTDataset(HP.SFT_DATA_PATH)
@@ -340,16 +460,23 @@ def run_sft():
         logging_steps=10,
         save_strategy="epoch",
         report_to="none",
-        remove_unused_columns=False, 
-        dataloader_pin_memory=False,
+        remove_unused_columns=False,
         warmup_ratio=0.1
     )
     
-    trainer = Trainer(model=model, args=args, train_dataset=train_dataset, data_collator=collator)
+    # Use Custom Weighted Trainer instead of Standard Trainer
+    trainer = WeightedActionTrainer(
+        model=model, 
+        args=args, 
+        train_dataset=train_dataset, 
+        data_collator=collator
+    )
     
-    print("[SFT] Starting Semantic & Spatial Injection Training...")
+    print("[SFT] Starting Training with Action-Weighted Loss...")
     trainer.train()
     
-    print(f"[SFT] Saving Model to {HP.SFT_OUTPUT_PATH}")
     trainer.save_model(HP.SFT_OUTPUT_PATH)
     processor.save_pretrained(HP.SFT_OUTPUT_PATH)
+
+if __name__ == "__main__":
+    run_sft()

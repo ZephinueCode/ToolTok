@@ -7,7 +7,7 @@ class HYPERPARAMS:
 
     # ================= TRAINING PARAMS FOR SFT =================
     # SFT (Semantic injection)
-    SFT_SAMPLES_PER_ACTION = 50
+    SFT_SAMPLES_PER_ACTION = 80
     SFT_DATA_PATH = "./data/sft.jsonl"
     SFT_OUTPUT_PATH = "./checkpoints/Qwen3-VL-GUI-SFT"
     
@@ -15,7 +15,7 @@ class HYPERPARAMS:
     IMAGE_SIZE = 640
     
     # Optimization
-    SFT_LEARN_RATE = 1.8e-5
+    SFT_LEARN_RATE = 1.5e-5
     SFT_BATCH_SIZE = 4
     SFT_GRAD_ACCUM_STEPS = 4
     SFT_EPOCHS = 1
@@ -30,9 +30,9 @@ class HYPERPARAMS:
     GRPO1_OUTPUT_PATH = "./checkpoints/Qwen3-VL-GUI-Grounding"
     
     GRPO1_LEARN_RATE = 5e-6
-    GRPO1_BATCH_SIZE = 16
+    GRPO1_BATCH_SIZE = 4
     GRPO1_GRAD_ACCUM_STEPS = 1
-    GRPO1_NUM_GENERATIONS = 8
+    GRPO1_NUM_GENERATIONS = 4
     GRPO1_NUM_EPOCHS = 1  # Number of training epochs
     GRPO1_LOGGING_STEPS = 1  # Log metrics every N steps
     GRPO1_TEMPERATURE = 1.0  # Sampling temperature for generation
@@ -40,6 +40,7 @@ class HYPERPARAMS:
     GRPO1_EVAL_STEPS = 100
     GRPO1_SAVE_STEPS = 100
     GRPO1_MAX_CHECKPOINTS = 2
+    GRPO_DATASET_SIZE = 100
     
     GRPO1_SEED = 42
     
