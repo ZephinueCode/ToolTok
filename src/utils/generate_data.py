@@ -19,12 +19,12 @@ VOCAB = {
     "container": ["page", "screen", "window", "list", "panel"],
     "move_verb": ["Move", "Shift", "Position the cursor", "Slide"],
     "click_verb": ["Click", "Tap", "Select", "Hit"],
-    "far_desc": ["significantly", "a lot", "far", "by 300 pixels"],
-    "mid_desc": ["moderately", "a bit", "by 100 pixels"],
-    "clo_desc": ["slightly", "a tiny bit", "pixel-perfect adjustment"],
+    "far_desc": ["significantly", "a lot", "far", "by 500 pixels"],
+    "mid_desc": ["moderately", "somewhat", "a normal distance", "by 150 pixels"],
+    "clo_desc": ["slightly", "a tiny bit", "a small distance", "by 30 pixels"],
     "up": ["up", "upwards"], "down": ["down", "downwards"],
     "left": ["left", "leftwards"], "right": ["right", "rightwards"],
-    "text_content": ["Hello world", "search query", "user@example.com"],
+    "text_content": ["Hello world", "Text data", "user@example.com", "Related information"],
     "type_verb": ["Type", "Enter", "Input"],
     "end_action": ["Stop task", "Finish interaction", "Done"]
 }

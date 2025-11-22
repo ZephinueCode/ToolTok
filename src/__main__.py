@@ -61,10 +61,9 @@ if __name__ == "__main__":
     # =========================================================================
     # PHASE 1: SFT 1 (Semantic Injection - Blank Image Training)
     # =========================================================================
-    '''
     print("\n" + "="*60)
     print("PHASE 1: SFT - Semantic Injection")
-    print("Action: Training Action Token embeddings on JSONL data (Blank Images).")
+    print("Action: Training Action Token embeddings on JSONL data (Blank Images) & Training on synth mission data.")
     print("="*60 + "\n")
     
     # Run the training pipeline
@@ -74,8 +73,7 @@ if __name__ == "__main__":
     print("\n" + "="*60)
     print(f"PHASE 1 COMPLETE. Model saved to:\n{HP.SFT_OUTPUT_PATH}")
     print("="*60 + "\n")
-    '''
-    
+
     # =========================================================================
     # PHASE 2: GRPO 1 (Visual Grounding)
     # =========================================================================

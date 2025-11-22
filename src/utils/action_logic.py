@@ -2,21 +2,21 @@
 
 # Coordinate deltas for movement tokens
 MOVE_DELTAS = {
-    "<MOVE_UP_FAR>":    (0, -300),
-    "<MOVE_UP_MID>":    (0, -100),
-    "<MOVE_UP_CLO>":    (0, -20),
+    "<MOVE_UP_FAR>":    (0, -500),
+    "<MOVE_UP_MID>":    (0, -150),
+    "<MOVE_UP_CLO>":    (0, -30),
     
-    "<MOVE_DOWN_FAR>":  (0, 300),
-    "<MOVE_DOWN_MID>":  (0, 100),
+    "<MOVE_DOWN_FAR>":  (0, 500),
+    "<MOVE_DOWN_MID>":  (0, 150),
     "<MOVE_DOWN_CLO>":  (0, 20),
     
-    "<MOVE_LEFT_FAR>":  (-300, 0),
-    "<MOVE_LEFT_MID>":  (-100, 0),
-    "<MOVE_LEFT_CLO>":  (-20, 0),
+    "<MOVE_LEFT_FAR>":  (-500, 0),
+    "<MOVE_LEFT_MID>":  (-150, 0),
+    "<MOVE_LEFT_CLO>":  (-30, 0),
     
-    "<MOVE_RIGHT_FAR>": (300, 0),
-    "<MOVE_RIGHT_MID>": (100, 0),
-    "<MOVE_RIGHT_CLO>": (20, 0),
+    "<MOVE_RIGHT_FAR>": (500, 0),
+    "<MOVE_RIGHT_MID>": (150, 0),
+    "<MOVE_RIGHT_CLO>": (30, 0),
 }
 
 def get_action_type(token: str) -> str:

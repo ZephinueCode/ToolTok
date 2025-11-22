@@ -215,7 +215,7 @@ def get_spatial_label_with_cot(cursor_pos, target_center, intent):
         if abs(dx) > abs(dy):
             direction = "RIGHT" if dx > 0 else "LEFT"
             d_val = abs(dx)
-            suffix = "FAR" if d_val > 250 else ("MID" if d_val > 50 else "CLO")
+            suffix = "FAR" if d_val > 300 else ("MID" if d_val > 100 else "CLO")
             
             if suffix == "FAR": reasoning += "There is a significant gap. I need a large jump. "
             elif suffix == "MID": reasoning += "The target is moderately away. I need a standard step. "
@@ -225,7 +225,7 @@ def get_spatial_label_with_cot(cursor_pos, target_center, intent):
         else:
             direction = "DOWN" if dy > 0 else "UP"
             d_val = abs(dy)
-            suffix = "FAR" if d_val > 250 else ("MID" if d_val > 50 else "CLO")
+            suffix = "FAR" if d_val > 300 else ("MID" if d_val > 100 else "CLO")
             
             if suffix == "FAR": reasoning += "There is a significant gap. I need a large jump. "
             elif suffix == "MID": reasoning += "The target is moderately away. I need a standard step. "
@@ -357,7 +357,7 @@ class SFTDataset(Dataset):
             # Cursor: ON target (<15px), may require slight adjustments.
             # Intent: Click
             # ----------------------------------------------------------
-            elif sample_rng < 0.8:
+            elif sample_rng < 0.9:
                 cx = tx + random.randint(-20, 20)
                 cy = ty + random.randint(-20, 20)
                 intent = {"type": "click", "name": target_name}
@@ -391,20 +391,26 @@ class SFTDataset(Dataset):
             # --- Drawing Logic ---
             # Only draw target for non-Nav tasks
             if intent.get("type") != "nav":
-                draw.rectangle([tx-30, ty-20, tx+30, ty+20], outline="green", width=3)
-                try: draw.text((tx-20, ty-35), target_name, fill="green")
+                draw.rectangle([tx-30, ty-20, tx+30, ty+20], outline=random.choice(("green","black","blue","yellow","red")), width=3)
+                try: draw.text((tx-20, ty-35), target_name, fill=random.choice(("green","black","blue","yellow","red")))
                 except: pass
             
             # Draw Cursor
-            draw.line([(cx-15, cy), (cx+15, cy)], fill="red", width=4)
-            draw.line([(cx, cy-15), (cx, cy+15)], fill="red", width=4)
+            # 1. Crosshair lines
+            radius = 40
+            line_len = radius * 1.5
+            draw.line([(cx - line_len, cy), (cx + line_len, cy)], fill="red", width=10)
+            draw.line([(cx, cy - line_len), (cx, cy + line_len)], fill="red", width=10)
             
+            # 2. Circle
+            draw.ellipse([(cx - radius, cy - radius), (cx + radius, cy + radius)], outline="red", width=10)
+
             # Draw Distractors (Noise)
             for _ in range(random.randint(2, 5)):
                 dx = random.randint(margin, HP.IMAGE_SIZE - margin)
                 dy = random.randint(margin, HP.IMAGE_SIZE - margin)
                 if abs(dx - tx) > 60 or abs(dy - ty) > 60:
-                    draw.rectangle([dx-30, dy-20, dx+30, dy+20], outline="blue", width=2)
+                    draw.rectangle([dx-30, dy-20, dx+30, dy+20], outline=random.choice(("green","black","blue","yellow","red")), width=3)
 
             # Generate Label
             cot_response = get_spatial_label_with_cot((cx, cy), (tx, ty), intent)
@@ -456,7 +462,7 @@ class SFTDataCollator:
             images=images,
             padding=True,
             truncation=True,
-            max_length=2048, 
+            max_length=8192, 
             return_tensors="pt"
         )
         
@@ -505,8 +511,14 @@ def setup_model_for_sft(model, processor):
     for name, param in model.named_parameters():
         total_params += param.numel()
         
+        # === Vision Module Handling ===
         if "visual" in name:
-            param.requires_grad = False # Freeze Vision
+            # Unfreeze Projector (Merger/Adapter layers) to adapt visual tokens
+            if "merger" in name or "attn_pool" in name or "projector" in name:
+                param.requires_grad = True
+            # Freeze the main Vision Backbone (Patch embeddings, Blocks)
+            else:
+                param.requires_grad = False
         elif "embed_tokens" in name or "wte" in name:
             # Physically unfrozen, but logically restricted by hook
             hidden_dim = param.shape[1]
@@ -517,7 +529,7 @@ def setup_model_for_sft(model, processor):
 
     print(f"[Model Setup] Total Params: {total_params:,}")
     print(f"[Model Setup] Trainable Params (Approx): {trainable_params:,}")
-    print("[Model Setup] Strategy: Vision(Freeze) + Embeds(Surgical) + LLM(Train)")
+    print("[Model Setup] Strategy: Vision(Merger) + Embeds(Train) + LLM(Train)")
     
 def run_sft():
     print(f"[SFT] Loading from {HP.INIT_MODEL_PATH}")
