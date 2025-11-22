@@ -11,6 +11,7 @@ from trl import GRPOTrainer, GRPOConfig
 from tqdm import tqdm
 from PIL import Image
 
+# Custom imports based on your project structure
 from ..tools.runner import Runner, ToolData, AgentTrajectory
 from .reward import batch_compute_rewards
 from ..utils.action_logic import MOVE_DELTAS, get_action_type
@@ -22,7 +23,12 @@ from ..tools.visual_utils import visualize_trajectory
 class ToolGRPOTrainer(GRPOTrainer):
     """
     GRPO Trainer tailored for GUI Agents.
-    Includes custom generation, reward calculation, and visualization hooks.
+    
+    Changes/Fixes:
+    1. Implements true Group Relative Policy Optimization by expanding inputs in `_prepare_inputs`.
+       This allows Advantage calculation even when per_device_train_batch_size=1.
+    2. Fixes Gradient Accumulation logging behavior by checking `accelerator.sync_gradients`.
+    3. Includes OOM retry logic during logprob replay.
     """
 
     def __init__(
@@ -85,40 +91,75 @@ class ToolGRPOTrainer(GRPOTrainer):
                 self.model.get_output_embeddings().requires_grad_(True)
 
     def _dummy_reward(self, prompts, completions, **kwargs):
+        """
+        Required by parent class but not used directly as we compute rewards manually.
+        """
         return [0.0] * len(prompts)
 
     def _prepare_inputs(self, inputs: Union[dict, list]) -> dict:
+        """
+        Prepares inputs for GRPO generation and scoring.
+
+        - If input length is a multiple of `num_generations` (Group Size), we assume 
+          it is already expanded and use it as is.
+        - Otherwise, we manually replicate the inputs to form the groups.
+        
+        This prevents the "Double Expansion" bug where 8 inputs became 64 generations.
+        """
+        # 1. Standardize inputs to a list of dicts
         if isinstance(inputs, dict):
             if "question" in inputs and isinstance(inputs["question"], list):
-                batch_size = len(inputs["question"])
+                raw_batch_size = len(inputs["question"])
                 inputs_list = [
                     {
                         "question": inputs["question"][i],
                         "image": inputs["image"][i],
                         "ground_truth_traj": inputs["ground_truth_traj"][i],
                     }
-                    for i in range(batch_size)
+                    for i in range(raw_batch_size)
                 ]
             else:
+                # If inputs are already processed logprobs (unlikely here but good for safety)
                 if "per_token_logps" in inputs: return inputs
                 raise ValueError("Input dict must contain lists for batching.")
         else:
             inputs_list = inputs
             
-        return self._generate_and_score_completions(inputs_list)
+        # 2. Determine Group Size from Arguments
+        group_size = self.args.num_generations
+        current_len = len(inputs_list)
+        
+        # 3. Expansion Logic (The Fix)
+        if current_len > 0 and current_len % group_size == 0:
+            # Case A: Already expanded. Do NOT multiply again.
+            final_inputs = inputs_list
+        else:
+            # Case B: Not expanded (e.g., raw batch size). Manually duplicate.
+            # e.g., Batch=1, Group=8 -> Input arrives with len=1 -> We make it 8.
+            final_inputs = []
+            for item in inputs_list:
+                for _ in range(group_size):
+                    final_inputs.append(item)
+        
+        # 4. Pass to generation
+        return self._generate_and_score_completions(final_inputs, group_size=group_size)
 
-    def _generate_and_score_completions(self, inputs: list[dict]) -> dict:
+    def _generate_and_score_completions(self, inputs: list[dict], group_size: int) -> dict:
+        """
+        Generates trajectories, computes rewards, and normalizes advantages within groups.
+        """
         device = self.accelerator.device
         mode = "train" if self.model.training else "eval"
-        batch_size = len(inputs)
+        total_batch_size = len(inputs) # This is effectively Original_BS * Group_Size
         
         all_trajectories = []
         all_token_ids = []
         all_old_logprobs = []
         
         if mode == "train":
-            print(f"\n[Gen] Generating trajectories for batch of {batch_size}...", end="", flush=True)
+            print(f"\n[Gen] Generating {total_batch_size} trajectories (Group Size: {group_size})...", end="", flush=True)
 
+        # 1. Generation Loop
         for sample in inputs:
             question_text = sample['question']
             
@@ -137,25 +178,46 @@ class ToolGRPOTrainer(GRPOTrainer):
         if mode == "train":
             print(" Done.")
 
-        # --- Compute Rewards ---
+        # 2. Compute Rewards
         current_epoch = self.state.epoch if self.state.epoch is not None else 0.0
         rewards = batch_compute_rewards(all_trajectories, epoch=current_epoch)
         rewards_tensor = torch.tensor(rewards, dtype=torch.float32, device=device)
         
-        all_rewards_gathered = self.accelerator.gather(rewards_tensor)
-        advantages = (rewards_tensor - rewards_tensor.mean()) / (rewards_tensor.std() + 1e-8)
+        # 3. Group Relative Advantage Calculation [CRITICAL FIX]
+        # We gathered rewards for (BS * G) items. We need to reshape to (BS, G) 
+        # to normalize mean/std WITHIN the group.
         
-        # --- Recompute Logprobs (Replay) ---
+        # Gather across GPUs (if using DDP) to ensure stats are global
+        all_rewards_gathered = self.accelerator.gather(rewards_tensor)
+        
+        # Calculate number of actual questions (Original Batch Size)
+        num_questions = total_batch_size // group_size
+        
+        # Reshape: [Batch_Size, Group_Size]
+        rewards_grouped = rewards_tensor.view(num_questions, group_size)
+        
+        # Compute Mean and Std per group
+        group_mean = rewards_grouped.mean(dim=1, keepdim=True)
+        group_std = rewards_grouped.std(dim=1, keepdim=True)
+        
+        # Normalize: (R - Mean) / Std
+        # Added 1e-8 to prevent division by zero if all rewards in a group are identical
+        advantages_grouped = (rewards_grouped - group_mean) / (group_std + 1e-8)
+        
+        # Flatten back to [Batch_Size * Group_Size] to align with token_ids
+        advantages = advantages_grouped.view(-1).detach()
+        
+        # 4. Recompute Logprobs (Replay) for Gradient Calculation
         all_current_logprobs = self._recompute_logprobs(all_trajectories, all_token_ids)
         
-        # --- Padding & Batching ---
+        # 5. Padding & Batching
         valid_token_ids = [ids for ids in all_token_ids if ids]
         max_len = max((len(ids) for ids in valid_token_ids), default=1)
         
         pad_ids, pad_mask, pad_curr, pad_old = [], [], [], []
         pad_token_id = self.processing_class.tokenizer.pad_token_id
         
-        for i in range(batch_size):
+        for i in range(total_batch_size):
             # Handle skipped (OOM) or empty trajectory
             if not all_token_ids[i] or len(all_current_logprobs[i]) == 0:
                 pad_ids.append(torch.tensor([pad_token_id], device=device, dtype=torch.long))
@@ -168,11 +230,13 @@ class ToolGRPOTrainer(GRPOTrainer):
             diff = max_len - length
             if diff < 0: diff = 0
 
+            # Pad IDs and Mask
             ids = all_token_ids[i] + [pad_token_id] * diff
             mask = [1] * length + [0] * diff
             pad_ids.append(torch.tensor(ids, device=device, dtype=torch.long))
             pad_mask.append(torch.tensor(mask, device=device, dtype=torch.long))
             
+            # Pad Logprobs
             curr = all_current_logprobs[i]
             old = torch.tensor(all_old_logprobs[i], device=device, dtype=torch.float32)
             
@@ -186,7 +250,7 @@ class ToolGRPOTrainer(GRPOTrainer):
         return {
             "raw_rewards": rewards_tensor, 
             "completion_mask": torch.stack(pad_mask),
-            "advantages": advantages.detach(),
+            "advantages": advantages,
             "per_token_logps": torch.stack(pad_curr),
             "old_token_logps": torch.stack(pad_old),
             "completion_ids": torch.stack(pad_ids)
@@ -195,7 +259,7 @@ class ToolGRPOTrainer(GRPOTrainer):
     def _recompute_logprobs(self, trajectories: List[AgentTrajectory], token_ids_list: List[List[int]]):
         """
         Re-run forward pass for gradient calculation (Replay).
-        [MODIFIED] Includes OOM Retry Logic: Try once, if fail -> empty_cache -> try again.
+        Includes OOM Retry Logic.
         """
         all_logprobs = []
         
@@ -204,27 +268,29 @@ class ToolGRPOTrainer(GRPOTrainer):
                 all_logprobs.append(torch.tensor([], device=self.model.device))
                 continue
             
-            # [NEW] Retry loop for OOM
+            # Retry loop for OOM
             for attempt in range(2):
                 try:
                     traj_logprobs = []
                     history_tokens = [] 
-                    init_img = traj.images[0]
                     
-                    if idx == 0 and len(token_ids) > 0:
-                         print(f"\n--- Replay Debug (Sample 0, {len(token_ids)} steps, Attempt {attempt+1}) ---")
-
+                    # Use the first image as default, or update step-by-step if your logic requires
+                    step_image = traj.images[0] 
+                    
                     for step_i, target_id in enumerate(token_ids):
-                        step_image = traj.images[step_i]
+                        if step_i < len(traj.images):
+                            step_image = traj.images[step_i]
                         
                         full_generated_text = traj.tools[step_i]
                         target_token_str = self.processing_class.decode([target_id], skip_special_tokens=False)
                         
+                        # Split prefix for teacher forcing
                         if full_generated_text.endswith(target_token_str):
                             assistant_prefix = full_generated_text[:-len(target_token_str)]
                         else:
                             assistant_prefix = full_generated_text.replace(target_token_str, "")
 
+                        # Construct Prompt
                         messages = [
                             {"role": "system", "content": AGENT_SYSTEM_PROMPT},
                             {
@@ -243,6 +309,7 @@ class ToolGRPOTrainer(GRPOTrainer):
                         prompt_text = self.processing_class.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
                         final_input_text = prompt_text + assistant_prefix
                         
+                        # Forward Pass
                         inputs = self.processing_class(
                             text=[final_input_text], 
                             images=[step_image], 
@@ -253,7 +320,7 @@ class ToolGRPOTrainer(GRPOTrainer):
                         outputs = self.model(**inputs)
                         logits = outputs.logits[0, -1, :]
 
-                        # Apply Masking
+                        # Apply Masking (Logic from your snippet)
                         if "Action: " in final_input_text[-20:]:
                             mask = torch.full_like(logits, -1e9)
                             mask[self.valid_ids_list] = 0.0
@@ -262,10 +329,12 @@ class ToolGRPOTrainer(GRPOTrainer):
                         lp = torch.log_softmax(logits, dim=-1)[target_id]
                         traj_logprobs.append(lp)
                         
+                        # Debug Print (Only for first sample, first attempt)
                         if idx == 0 and attempt == 0:
                              with torch.no_grad():
                                  pred_id = torch.argmax(logits).item()
                                  pred_str = self.processing_class.decode([pred_id], skip_special_tokens=False)
+                                 # Clean up newlines for print
                                  debug_context = assistant_prefix[-20:].replace('\n', '\\n')
                                  print(f" Step {step_i}:")
                                  print(f"   Context (End): '...{debug_context}'")
@@ -306,14 +375,21 @@ class ToolGRPOTrainer(GRPOTrainer):
         raw_rewards = inputs.get("raw_rewards", torch.tensor(0.0))
         current_raw_reward_mean = raw_rewards.mean().item()
 
+        # Sum logprobs over the sequence length
         traj_logps = (per_token_logps * mask).sum(dim=1)
         traj_old_logps = (old_token_logps * mask).sum(dim=1)
         
+        # PPO / GRPO Loss Calculation
         pg_loss = -(advantages * traj_logps).mean()
         kl_penalty = (traj_logps - traj_old_logps).pow(2).mean()
         loss = pg_loss + self.beta * kl_penalty
         
-        if self.model.training:
+        # --- LOGGING FIX ---
+        # We only want to log metrics when the optimizer actually updates (accumulated gradients synced).
+        # 'self.accelerator.sync_gradients' is True only on the boundary of gradient_accumulation_steps.
+        is_update_step = self.accelerator.sync_gradients
+        
+        if self.model.training and is_update_step:
             self.log({
                 "loss/total": loss.item(),
                 "loss/pg": pg_loss.item(),
@@ -324,7 +400,6 @@ class ToolGRPOTrainer(GRPOTrainer):
             
         return loss
 
-    # ... (Evaluation loop remains unchanged) ...
     def evaluation_loop(
         self,
         dataloader,
@@ -333,18 +408,24 @@ class ToolGRPOTrainer(GRPOTrainer):
         ignore_keys: Optional[List[str]] = None,
         metric_key_prefix: str = "eval",
     ) -> EvalLoopOutput:
+        """
+        Custom Evaluation Loop with Visualization.
+        """
         model = self._wrap_model(self.model, training=False, dataloader=dataloader)
         model.eval()
         current_step = self.state.global_step
         vis_save_dir = f"./results/eval_step_{current_step}"
         os.makedirs(vis_save_dir, exist_ok=True)
+        
         print(f"\n[{metric_key_prefix}] Starting Evaluation Loop...")
         print(f"[{metric_key_prefix}] Saving visualizations to: {vis_save_dir}")
+        
         all_rewards = []
         success_count = 0
         total_steps = 0
         failed_counts = {1:0, 2:0, 3:0, 4:0}
         global_sample_idx = 0
+        
         for step, batch_inputs in tqdm(enumerate(dataloader), total=len(dataloader), desc="Evaluating"):
             if isinstance(batch_inputs, dict):
                 bs = len(batch_inputs["question"])
@@ -354,8 +435,11 @@ class ToolGRPOTrainer(GRPOTrainer):
                         "ground_truth_traj": batch_inputs["ground_truth_traj"][i],
                     } for i in range(bs)]
             else: inputs_list = batch_inputs
+            
             for sample in inputs_list:
                 question_text = sample['question']
+                
+                # Run evaluation trajectory (Greedy/Low Temp)
                 traj, _, _ = self.runner.run_trajectory(
                     model=model,
                     processor=self.processing_class,
@@ -364,17 +448,22 @@ class ToolGRPOTrainer(GRPOTrainer):
                     max_steps=self.max_tool_steps,
                     temperature=0.0 
                 )
+                
                 reward = batch_compute_rewards([traj])[0]
                 all_rewards.append(reward)
                 total_steps += traj.step_count
                 is_success = (traj.failed == 0)
+                
                 if is_success: success_count += 1
                 else:
                     if traj.failed in failed_counts: failed_counts[traj.failed] += 1
+                
+                # Visualization
                 try:
                     raw_img = sample['image']
                     if isinstance(raw_img, np.ndarray): base_img = Image.fromarray(raw_img).convert("RGB")
                     else: base_img = raw_img.convert("RGB")
+                    
                     gt_data = sample['ground_truth_traj']
                     gt_bbox = gt_data[0]['bbox'] if gt_data else None
                     w, h = raw_img.size
@@ -392,15 +481,19 @@ class ToolGRPOTrainer(GRPOTrainer):
                     status_str = "PASS" if is_success else "FAIL"
                     filename = f"id_{global_sample_idx:04d}_{status_str}_rew{int(reward)}.png"
                     vis_img.save(os.path.join(vis_save_dir, filename))
+                    
                 except Exception as e: print(f"[Eval] Visualization failed: {e}")
+                
                 global_sample_idx += 1
                 torch.cuda.empty_cache()
 
         num_samples = len(all_rewards)
         if num_samples == 0: return EvalLoopOutput(predictions=None, label_ids=None, metrics={}, num_samples=0)
+        
         avg_reward = sum(all_rewards) / num_samples
         success_rate = success_count / num_samples
         avg_steps = total_steps / num_samples
+        
         metrics = {
             f"{metric_key_prefix}_reward": avg_reward,
             f"{metric_key_prefix}_success_rate": success_rate,
@@ -409,10 +502,12 @@ class ToolGRPOTrainer(GRPOTrainer):
             f"{metric_key_prefix}_fail_miss": failed_counts[3] / num_samples, 
             f"{metric_key_prefix}_fail_timeout": failed_counts[4] / num_samples,
         }
+        
         print(f"\n{'='*40}")
         print(f"EVALUATION RESULTS ({num_samples} samples)")
         print(f"Avg Reward:   {avg_reward:.2f}")
         print(f"Success Rate: {success_rate:.2%}")
         print(f"Avg Steps:    {avg_steps:.2f}")
         print(f"{'='*40}\n")
+        
         return EvalLoopOutput(predictions=None, label_ids=None, metrics=metrics, num_samples=num_samples)

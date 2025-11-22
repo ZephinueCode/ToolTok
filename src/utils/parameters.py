@@ -30,9 +30,9 @@ class HYPERPARAMS:
     GRPO1_OUTPUT_PATH = "./checkpoints/Qwen3-VL-GUI-ScreenSpot-1"
     
     GRPO1_LEARN_RATE = 5e-6
-    GRPO1_BATCH_SIZE = 4
+    GRPO1_BATCH_SIZE = 8
     GRPO1_GRAD_ACCUM_STEPS = 1
-    GRPO1_NUM_GENERATIONS = 4
+    GRPO1_NUM_GENERATIONS = 8
     GRPO1_NUM_EPOCHS = 1  # Number of training epochs
     GRPO1_LOGGING_STEPS = 1  # Log metrics every N steps
     GRPO1_TEMPERATURE = 1.0  # Sampling temperature for generation

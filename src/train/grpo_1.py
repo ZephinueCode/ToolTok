@@ -2,7 +2,7 @@
 
 import torch
 import os
-import glob # [NEW] needed for searching checkpoints
+import glob
 from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 from trl import GRPOConfig
 
@@ -35,9 +35,6 @@ def get_last_checkpoint(output_dir):
 
 def run_grpo_1():
     print(f"[GRPO-1] Initializing Pipeline...")
-    
-    # ... (Loading Model, Processor, Dataset, Runner code remains UNCHANGED) ...
-    # [省略中间重复代码，请保持原样]
     
     # 1. Load Post-SFT Model
     model_path = HP.SFT_OUTPUT_PATH 
@@ -73,6 +70,7 @@ def run_grpo_1():
         save_steps=HP.GRPO1_SAVE_STEPS,
         max_grad_norm=1.0,
         temperature=HP.GRPO1_TEMPERATURE,
+        optim="adamw_bnb_8bit",
         report_to="none",
         remove_unused_columns=False,
         warmup_ratio=0.05,
@@ -80,13 +78,14 @@ def run_grpo_1():
         
         do_eval=True,
         eval_strategy="steps",
-        eval_steps=HP.GRPO1_EVAL_STEPS, 
-        per_device_eval_batch_size=4,  
+        eval_steps=HP.GRPO1_EVAL_STEPS,
         eval_on_start=False,
         save_total_limit=HP.GRPO1_MAX_CHECKPOINTS,
         load_best_model_at_end=True,
         metric_for_best_model="eval_reward",
         greater_is_better=True,
+        gradient_checkpointing=True,
+        gradient_checkpointing_kwargs={"use_reentrant": False},
     )
     
     # 5. Trainer
