@@ -48,6 +48,8 @@ def run_grpo_1():
     )
     processor = AutoProcessor.from_pretrained(model_path, trust_remote_code=True)
     
+    model.enable_input_require_grads()
+
     # 2. Dataset
     full_dataset = prepare_grpo1_dataset(HP.GRPO1_DATA_PATH, size=HP.GRPO_DATASET_SIZE)
     train_data, eval_data = train_eval_split(full_dataset, eval_ratio=0.05)
@@ -71,7 +73,7 @@ def run_grpo_1():
         max_grad_norm=1.0,
         temperature=HP.GRPO1_TEMPERATURE,
         optim="adamw_bnb_8bit",
-        report_to="none",
+        report_to="tensorboard",
         remove_unused_columns=False,
         warmup_ratio=0.05,
         beta=0.02, 
@@ -84,8 +86,7 @@ def run_grpo_1():
         load_best_model_at_end=True,
         metric_for_best_model="eval_reward",
         greater_is_better=True,
-        gradient_checkpointing=True,
-        gradient_checkpointing_kwargs={"use_reentrant": False},
+        gradient_checkpointing=True
     )
     
     # 5. Trainer
@@ -134,4 +135,5 @@ def run_grpo_1():
     # 7. Save
     print(f"[GRPO-1] Saving final model to {HP.GRPO1_OUTPUT_PATH}")
     trainer.save_model(HP.GRPO1_OUTPUT_PATH)
+    trainer.save_state()
     processor.save_pretrained(HP.GRPO1_OUTPUT_PATH)

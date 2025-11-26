@@ -29,6 +29,8 @@ If prompted with [Action], You can use the following action tokens:
 <GO_HOME>
 <END_ACTION>
 
+Before you try to do non action commands like <GO_BACK> or <TEXT_START>, you should revisit the image and **ensure** that it **absolutely** cannot be done by navigating and clicking something on the screen.
+
 You must output your response in two clearly labeled sections:
 
 Reasoning: [Step-by-step analysis of the screen content and instruction]

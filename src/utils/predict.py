@@ -184,10 +184,11 @@ if __name__ == "__main__":
         args.next = True
     
     model = Qwen3VLForConditionalGeneration.from_pretrained(
-        "./checkpoints/Qwen3-VL-GUI-SFT",
+        "./checkpoints/Qwen3-VL-GUI-SFT-ScreenSpot",
+        device_map="auto",
         trust_remote_code=True)
     processor = AutoProcessor.from_pretrained(
-        "./checkpoints/Qwen3-VL-GUI-SFT",
+        "./checkpoints/Qwen3-VL-GUI-SFT-ScreenSpot",
         trust_remote_code=True)
     
     # Load and encode image to base64
@@ -205,7 +206,7 @@ if __name__ == "__main__":
         {"role": "user", 
          "content": [
              {"type": "image", "image": image_url},
-             {"type": "text", "text": """[Action] Open the file."""}
+             {"type": "text", "text": """[Action] Perform a step for: Close the page."""}
          ]}
     ]
     
@@ -215,7 +216,7 @@ if __name__ == "__main__":
             model,
             processor,
             messages=messages,
-            max_new_tokens=100,
+            max_new_tokens=512,
             temperature=1.0
         )
         print(f"Completion:\n{completion}")

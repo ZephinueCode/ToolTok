@@ -8,7 +8,7 @@ MOVE_DELTAS = {
     
     "<MOVE_DOWN_FAR>":  (0, 500),
     "<MOVE_DOWN_MID>":  (0, 150),
-    "<MOVE_DOWN_CLO>":  (0, 20),
+    "<MOVE_DOWN_CLO>":  (0, 30),
     
     "<MOVE_LEFT_FAR>":  (-500, 0),
     "<MOVE_LEFT_MID>":  (-150, 0),

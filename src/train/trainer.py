@@ -51,16 +51,27 @@ class ToolGRPOTrainer(GRPOTrainer):
         self.runner = runner or Runner()
         self.beta = beta
         
-        # --- Pre-compute Valid IDs for Masking ---
-        valid_action_ids = {
-            self.processing_class.tokenizer.convert_tokens_to_ids(t) 
-            for t in ACTION_TOKENS
-        }
+        # =====================================================================
+        # [FIX] Pre-compute Valid IDs for Masking (Standard Logic Only)
+        # =====================================================================
+        valid_action_ids = set()
+        for t in ACTION_TOKENS:
+            # User handled spacing elsewhere, so we just encode the token directly
+            ids = self.processing_class.tokenizer.encode(t, add_special_tokens=False)
+            if len(ids) > 0:
+                # Usually take the last one if multiple, or just the single ID
+                valid_action_ids.add(ids[-1])
+
         angle_id = self.processing_class.tokenizer.convert_tokens_to_ids("<")
         im_end_id = self.processing_class.tokenizer.convert_tokens_to_ids("<|im_end|>")
         
         self.valid_ids_set = valid_action_ids.union({angle_id, im_end_id})
-        self.valid_ids_list = list(self.valid_ids_set) 
+        self.valid_ids_list = list(self.valid_ids_set)
+        
+        # Pre-allocate mask placeholder (will be moved to device later)
+        self.valid_ids_tensor = torch.tensor(self.valid_ids_list, dtype=torch.long)
+        print(f"[ToolGRPOTrainer] Masking enabled. Valid Action IDs Count: {len(self.valid_ids_list)}")
+        # =====================================================================
         
         # --- Embedding Freeze & Untie Logic ---
         print(f"\n[ToolGRPOTrainer] Configuring Model Layers...")
@@ -156,7 +167,6 @@ class ToolGRPOTrainer(GRPOTrainer):
         pad_token_id = self.processing_class.tokenizer.pad_token_id
         
         for i in range(batch_size):
-            # Handle skipped (OOM) or empty trajectory
             if not all_token_ids[i] or len(all_current_logprobs[i]) == 0:
                 pad_ids.append(torch.tensor([pad_token_id], device=device, dtype=torch.long))
                 pad_mask.append(torch.tensor([0], device=device, dtype=torch.long))
@@ -195,21 +205,21 @@ class ToolGRPOTrainer(GRPOTrainer):
     def _recompute_logprobs(self, trajectories: List[AgentTrajectory], token_ids_list: List[List[int]]):
         """
         Re-run forward pass for gradient calculation (Replay).
-        [MODIFIED] Includes OOM Retry Logic: Try once, if fail -> empty_cache -> try again.
         """
         all_logprobs = []
+        
+        if hasattr(self.model, "enable_input_require_grads"):
+            self.model.enable_input_require_grads()
         
         for idx, (traj, token_ids) in enumerate(zip(trajectories, token_ids_list)):
             if not token_ids:
                 all_logprobs.append(torch.tensor([], device=self.model.device))
                 continue
             
-            # [NEW] Retry loop for OOM
             for attempt in range(2):
                 try:
                     traj_logprobs = []
-                    history_tokens = [] 
-                    init_img = traj.images[0]
+                    # No history tokens needed
                     
                     if idx == 0 and len(token_ids) > 0:
                          print(f"\n--- Replay Debug (Sample 0, {len(token_ids)} steps, Attempt {attempt+1}) ---")
@@ -220,10 +230,7 @@ class ToolGRPOTrainer(GRPOTrainer):
                         full_generated_text = traj.tools[step_i]
                         target_token_str = self.processing_class.decode([target_id], skip_special_tokens=False)
                         
-                        if full_generated_text.endswith(target_token_str):
-                            assistant_prefix = full_generated_text[:-len(target_token_str)]
-                        else:
-                            assistant_prefix = full_generated_text.replace(target_token_str, "")
+                        assistant_prefix = full_generated_text.replace(target_token_str, "")
 
                         messages = [
                             {"role": "system", "content": AGENT_SYSTEM_PROMPT},
@@ -249,11 +256,15 @@ class ToolGRPOTrainer(GRPOTrainer):
                         outputs = self.model(**inputs)
                         logits = outputs.logits[0, -1, :]
 
-                        # Apply Masking
+                        # =====================================================
+                        # [CRITICAL FIX] Apply Masking in Trainer
+                        # =====================================================
+                        # Only restrict if we are actually predicting an action
                         if "Action: " in final_input_text[-20:]:
                             mask = torch.full_like(logits, -1e9)
-                            mask[self.valid_ids_list] = 0.0
+                            mask[self.valid_ids_tensor.to(logits.device)] = 0.0
                             logits = logits + mask
+                        # =====================================================
                         
                         lp = torch.log_softmax(logits, dim=-1)[target_id]
                         traj_logprobs.append(lp)
@@ -268,24 +279,19 @@ class ToolGRPOTrainer(GRPOTrainer):
                                  print(f"   Target: '{target_token_str}' | Pred: '{pred_str}'")
                                  print(f"   Logprob: {lp.item():.4f}")
 
-                        history_tokens.append(full_generated_text)
-
-                    # Success!
                     all_logprobs.append(torch.stack(traj_logprobs))
-                    break # Exit retry loop
+                    break 
 
                 except RuntimeError as e:
                     if "out of memory" in str(e):
                         torch.cuda.empty_cache()
                         if attempt == 0:
                             print(f"\n[Trainer] OOM for sample {idx}. Clearing cache and retrying...")
-                            continue # Retry
+                            continue 
                         else:
-                            print(f"\n[Trainer] OOM again for sample {idx}. Skipping.")
-                            all_logprobs.append(torch.tensor([], device=self.model.device))
-                            break # Give up
+                            raise e
                     else:
-                        raise e # Re-raise other errors
+                        raise e 
             
             torch.cuda.empty_cache()
             
@@ -319,7 +325,7 @@ class ToolGRPOTrainer(GRPOTrainer):
             })
             
         return loss
-
+    
     # ... (Evaluation loop remains unchanged) ...
     def evaluation_loop(
         self,
@@ -386,7 +392,7 @@ class ToolGRPOTrainer(GRPOTrainer):
                         instruction=traj.global_question
                     )
                     status_str = "PASS" if is_success else "FAIL"
-                    filename = f"id_{global_sample_idx:04d}_{status_str}_rew{int(reward)}.png"
+                    filename = f"id_{global_sample_idx:04d}_{status_str}_rew{float(reward)}.png"
                     vis_img.save(os.path.join(vis_save_dir, filename))
                 except Exception as e: print(f"[Eval] Visualization failed: {e}")
                 global_sample_idx += 1

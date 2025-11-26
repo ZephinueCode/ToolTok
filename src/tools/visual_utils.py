@@ -3,10 +3,12 @@
 from PIL import Image, ImageDraw, ImageFont
 import textwrap # [NEW] For wrapping long instructions
 
-def draw_cursor(image: Image.Image, x: int, y: int, color: str = "red", radius: int = 40) -> Image.Image:
+from PIL import Image, ImageDraw, ImageFont
+
+def draw_cursor(image: Image.Image, x: int, y: int, color: str = "red", radius: int = 30) -> Image.Image:
     """
-    Draws a visual cursor on the image at coordinates (x, y) with label 'cursor'.
-    Operates directly on the original image size.
+    Draws a visual cursor with an 'Open Center' (Gap) to avoid obscuring the target underneath.
+    Includes a 'cursor' text label.
     """
     img_copy = image.copy()
     draw = ImageDraw.Draw(img_copy)
@@ -16,15 +18,19 @@ def draw_cursor(image: Image.Image, x: int, y: int, color: str = "red", radius: 
     x = max(0, min(x, w-1))
     y = max(0, min(y, h-1))
     
-    # 1. Crosshair lines
+    # Visual Parameters
+    width = 5
+    gap = 10
     line_len = radius * 1.5
-    draw.line([(x - line_len, y), (x + line_len, y)], fill=color, width=10)
-    draw.line([(x, y - line_len), (x, y + line_len)], fill=color, width=10)
     
-    # 2. Circle
-    draw.ellipse([(x - radius, y - radius), (x + radius, y + radius)], outline=color, width=10)
+    # 1. Draw Gapped Crosshair
+    draw.line([(x - line_len, y), (x - gap, y)], fill=color, width=width)
+    draw.line([(x + gap, y), (x + line_len, y)], fill=color, width=width)
+    draw.line([(x, y - line_len), (x, y - gap)], fill=color, width=width)
+    draw.line([(x, y + gap), (x, y + line_len)], fill=color, width=width)
     
-    # 3. Text Label
+    draw.ellipse([(x - radius, y - radius), (x + radius, y + radius)], outline=color, width=width)
+    
     try:
         # Try to use a proportional font size based on image width
         font_size = max(15, int(w * 0.02)) 
@@ -37,7 +43,7 @@ def draw_cursor(image: Image.Image, x: int, y: int, color: str = "red", radius: 
     text_w = text_bbox[2] - text_bbox[0]
     text_h = text_bbox[3] - text_bbox[1]
     
-    # Position text: Try top-right of cursor, fallback if out of bounds
+    # Position text: Top-right of cursor, fallback if out of bounds
     text_x = x + radius + 5
     text_y = y - radius - text_h
     

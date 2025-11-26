@@ -7,84 +7,59 @@ from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 from .utils.parameters import HYPERPARAMS as HP
 from .utils.tokenizer import add_new_tokens, save_model
 from .utils.action import ACTION_BASE_EMBEDDING
-from .train.grpo_1 import run_grpo_1
 
-# Import Training Function
-from .train.sft import run_sft
+# Import Training Phases
+from .train.sft import run_sft as run_sft_phase1
+from .train.sft2 import run_sft_screenspot as run_sft_phase2
 
 if __name__ == "__main__":
     
     # =========================================================================
-    # PHASE 0: Initialization (Add GUI Tokens & Semantic Anchoring)
+    # PHASE 0: Initialization
     # =========================================================================
     print("\n" + "="*60)
     print("PHASE 0: Model Initialization")
-    print("Action: Adding GUI tokens to vocabulary and resizing embeddings.")
     print("="*60 + "\n")
     
-    # 1. Configuration
-    MODEL_PATH = HP.BASE_MODEL_PATH
-    OUTPUT_PATH = HP.INIT_MODEL_PATH
-    
-    # Check if initialization is already done to save time
-    if os.path.exists(OUTPUT_PATH):
-        print(f"[Main] Found initialized model at {OUTPUT_PATH}. Skipping Phase 0.")
+    if os.path.exists(HP.INIT_MODEL_PATH):
+        print(f"[Main] Found initialized model at {HP.INIT_MODEL_PATH}. Skipping.")
     else:
-        # 2. Load Base Model & Processor
-        print(f"[Main] Loading base model from: {MODEL_PATH}")
-        try:
-            # Note: Qwen3VL typically requires trust_remote_code=True
-            model = Qwen3VLForConditionalGeneration.from_pretrained(
-                MODEL_PATH,
-                device_map="auto",
-                torch_dtype=torch.bfloat16,
-                trust_remote_code=True
-            )
-            processor = AutoProcessor.from_pretrained(
-                MODEL_PATH,
-                trust_remote_code=True
-            )
-        except Exception as e:
-            print(f"[Error] Failed to load model. Please check the path in src/utils/parameters.py.\nDetails: {e}")
-            exit(1)
+        print(f"[Main] Loading base model from: {HP.BASE_MODEL_PATH}")
+        model = Qwen3VLForConditionalGeneration.from_pretrained(
+            HP.BASE_MODEL_PATH, device_map="auto", torch_dtype=torch.bfloat16, trust_remote_code=True
+        )
+        processor = AutoProcessor.from_pretrained(HP.BASE_MODEL_PATH, trust_remote_code=True)
         
-        # 3. Add Tokens & Smart Init
         print("[Main] Injecting GUI Action Tokens...")
         model, processor = add_new_tokens(model, processor, ACTION_BASE_EMBEDDING)
         
-        # 4. Save Initialized Model
-        save_model(model, processor, OUTPUT_PATH)
-        print("\n" + "="*60)
-        print(f"PHASE 0 COMPLETE. Initialized model saved to:\n{OUTPUT_PATH}")
-        print("="*60 + "\n")
-
+        save_model(model, processor, HP.INIT_MODEL_PATH)
+        print(f"PHASE 0 COMPLETE. Saved to: {HP.INIT_MODEL_PATH}")
+    
     # =========================================================================
-    # PHASE 1: SFT 1 (Semantic Injection - Blank Image Training)
+    # PHASE 1: SFT - Semantic Injection (Synthetic Data)
     # =========================================================================
     print("\n" + "="*60)
     print("PHASE 1: SFT - Semantic Injection")
-    print("Action: Training Action Token embeddings on JSONL data (Blank Images) & Training on synth mission data.")
+    print("Action: Training on JSONL data & Synthetic Blanks.")
     print("="*60 + "\n")
     
-    # Run the training pipeline
-    # Input: INIT_MODEL_PATH -> Output: SFT_1_OUTPUT_PATH
-    run_sft()
+    # Check if Phase 1 is already done
+    if not os.path.exists(HP.SFT_OUTPUT_PATH):
+        run_sft_phase1()
+    else:
+        print("[Main] Phase 1 output found. Skipping.")
     
-    print("\n" + "="*60)
-    print(f"PHASE 1 COMPLETE. Model saved to:\n{HP.SFT_OUTPUT_PATH}")
-    print("="*60 + "\n")
-
     # =========================================================================
-    # PHASE 2: GRPO 1 (Visual Grounding)
+    # PHASE 2: SFT - Visual Grounding (ScreenSpot Trajectories)
     # =========================================================================
     print("\n" + "="*60)
-    print("PHASE 2: GRPO 1 - Visual Grounding")
-    print("Action: Reinforcement Learning on ScreenSpot to learn cursor control.")
+    print("PHASE 2: SFT - Visual Grounding")
+    print("Action: Training on ScreenSpot shortest-path trajectories.")
     print("="*60 + "\n")
     
-    run_grpo_1()
+    run_sft_phase2()
     
     print("\n" + "="*60)
-    print(f"PHASE 2 COMPLETE. Model saved to:\n{HP.GRPO1_OUTPUT_PATH}")
+    print(f"PIPELINE COMPLETE. Final Model: {HP.SFT_2_OUTPUT_PATH}")
     print("="*60 + "\n")
-    

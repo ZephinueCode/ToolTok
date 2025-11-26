@@ -21,7 +21,7 @@ def compute_reward(agent_traj) -> float:
     
     # CONSTANTS
     MAX_SCREEN_DIAG = 1414.0  # Approx diagonal of 1000x1000
-    NEAR_MISS_THRESHOLD = 80.0
+    NEAR_MISS_THRESHOLD = 60.0
     
     # ============================================================
     # 0. Context Extraction

@@ -28,68 +28,80 @@ from ..utils.prompts import AGENT_SYSTEM_PROMPT
 
 class WeightedActionTrainer(Trainer):
     """
-    Custom Trainer to solve 'Loss Dilution'.
-    Standard CrossEntropyLoss averages all tokens. Since Reasoning is long (~100 tokens)
-    and Action is short (1 token), the model ignores the Action accuracy.
-    
-    This Trainer forces a high weight (e.g., 20x) on the FINAL token (the Action).
+    Applies 20x weight to the Action Token.
+    Crucially ignores <|im_end|> and Newlines to focus on the Action.
     """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        # 1. Pre-compute Valid Action Token IDs
+        self.valid_action_ids = set()
+        if self.processing_class:
+            for t in ACTION_TOKENS:
+                # Encode "TOKEN"
+                ids = self.processing_class.tokenizer.encode(t, add_special_tokens=False)
+                if ids: self.valid_action_ids.add(ids[-1])
+                # Encode " TOKEN" (with space)
+                ids_space = self.processing_class.tokenizer.encode(" " + t, add_special_tokens=False)
+                if ids_space: self.valid_action_ids.add(ids_space[-1])
+        
+        # 2. Identify Blacklist IDs
+        self.im_end_id = self.processing_class.tokenizer.convert_tokens_to_ids("<|im_end|>")
+        self.eos_id = self.processing_class.tokenizer.eos_token_id
+        self.newline_id = 198 # ID for '\n' in Qwen/Llama
+
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         labels = inputs.get("labels")
-        
-        # 1. Forward Pass
         outputs = model(**inputs)
         logits = outputs.get("logits")
 
-        # 2. Shift Logits and Labels for Causal LM
-        # logits[t] predicts labels[t+1]
+        # Shift for Causal LM
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
 
-        # 3. Compute Per-Token Loss (No Reduction)
         loss_fct = torch.nn.CrossEntropyLoss(reduction='none')
         batch_size = labels.size(0)
-        
-        # [FIX] Get vocab_size dynamically from logits shape
-        # This avoids AttributeError if config doesn't expose vocab_size
         vocab_size = shift_logits.size(-1)
         
-        # Flatten dimensions to compute standard CE
-        raw_loss = loss_fct(
-            shift_logits.view(-1, vocab_size), 
-            shift_labels.view(-1)
-        )
-        # Reshape back to [Batch, Seq_Len-1]
+        raw_loss = loss_fct(shift_logits.view(-1, vocab_size), shift_labels.view(-1))
         raw_loss = raw_loss.view(batch_size, -1)
 
-        # 4. Build Weight Matrix
         weights = torch.ones_like(raw_loss)
-        
-        # Config: How much more important is the Action token?
-        ACTION_WEIGHT = 20.0 
-        
-        # Iterate over batch to find the end of each sequence
+        ACTION_WEIGHT = 30.0
+
         for i in range(batch_size):
-            # Get indices of non-padding labels (-100 is padding/masked)
             valid_mask = (shift_labels[i] != -100)
-            valid_indices = valid_mask.nonzero(as_tuple=False)
+            valid_indices = valid_mask.nonzero(as_tuple=False).squeeze(1)
             
             if len(valid_indices) > 0:
-                # The last valid index is our Target Action Token 
-                # (Because the data generator puts "Action: <TOKEN>" at the very end)
-                last_idx = valid_indices[-1].item()
+                target_idx = None
                 
-                # Apply weight to exactly this 1 token (Window = 1)
-                weights[i, last_idx] = ACTION_WEIGHT
+                # [CRITICAL LOGIC] Backtrack to find Action Token
+                # Search last 15 tokens. Priority: Action Token > Non-Special
+                search_window = torch.flip(valid_indices, [0])[:15]
+                
+                # Pass 1: Strict match for Action Token ID
+                for idx in search_window:
+                    token_id = shift_labels[i, idx].item()
+                    if token_id in self.valid_action_ids:
+                        target_idx = idx
+                        break
+                
+                # Pass 2: Fallback (if tokenization mismatch), skip blacklist
+                if target_idx is None:
+                    for idx in search_window:
+                        token_id = shift_labels[i, idx].item()
+                        if token_id not in [self.im_end_id, self.eos_id, self.newline_id]:
+                            target_idx = idx
+                            break
+                
+                if target_idx is not None:
+                    weights[i, target_idx] = ACTION_WEIGHT
 
-        # 5. Compute Weighted Mean
-        # Mask out padding tokens from the weights so they don't affect the mean
         valid_tokens_mask = (shift_labels != -100).float()
         final_weights = weights * valid_tokens_mask
-        
-        # Weighted Average = Sum(Loss * Weight) / Sum(Weights)
         loss = (raw_loss * final_weights).sum() / (final_weights.sum() + 1e-8)
-
+        
         return (loss, outputs) if return_outputs else loss
 
 # =============================================================================
@@ -186,7 +198,7 @@ def get_spatial_label_with_cot(cursor_pos, target_center, intent):
     action = ""
     
     if dist < HIT_THRESHOLD:
-        reasoning += "The cursor is aligned with the target. "
+        reasoning += f"The cursor is currently positioned **over** the target '{target_name}'. "
         if intent["type"] == "click":
             reasoning += "I will perform a click."
             action = "<CLICK_SHORT>"
@@ -256,7 +268,7 @@ class SFTDataset(Dataset):
         
         print(f"[Dataset] Total Samples: {self.total_len}")
         
-        self.ui_names = ["Submit", "Cancel", "Search", "Menu", "Settings", "Back", "Profile", "Login"]
+        self.ui_names = ["Submit", "Cancel", "Search", "Menu", "Settings", "Back", "Profile", "Login", "Options", "Button", "Application", "Game", "Function"]
         self.text_contents = ["hello", "test", "123456", "user", "admin"]
         
         # [NEW] Diverse Prompt Templates for better generalization
@@ -264,16 +276,16 @@ class SFTDataset(Dataset):
             "Click {name}", "Select {name}", "Tap on {name}", "Hit the {name} button", "Choose {name}"
         ]
         self.prompts_move = [
-            "Move cursor to {name}", "Hover over {name}", "Point at {name}", "Go to {name}", "Find {name}"
+            "Move to {name}", "Hover over {name}", "Point at {name}", "Go to {name}", "Find {name}"
         ]
         self.prompts_text = [
-            "Type '{content}' into {name}", "Enter '{content}' in {name}", "Fill {name} with '{content}'", "Input '{content}'"
+            "Type '{content}'", "Enter '{content}' ", "Fill {name} with '{content}'", "Input '{content}'"
         ]
         self.prompts_back = [
-            "Go back", "Return to previous page", "Back", "Navigate back"
+            "Go back", "Return to previous page", "Back", "Navigate back", "Backspace", "Backwards"
         ]
         self.prompts_home = [
-            "Go home", "Return to main screen", "Home", "Main menu", "Exit to desktop"
+            "Go home", "Return to main screen", "Home", "Exit to desktop", "Quit", "Homepage"
         ]
 
     def _load_real_images(self, limit=200):
@@ -326,16 +338,16 @@ class SFTDataset(Dataset):
             target_name = random.choice(self.ui_names)
             
             # ----------------------------------------------------------
-            # CASE A: Moving (50%) - Force <MOVE>
-            # Cursor: FAR from target (>100px)
+            # CASE A: Moving (70%) - Force <MOVE>
+            # Cursor: FAR from target (>50px)
             # Intent: Random (User wants Click/Move/Text, but needs to move first)
             # ----------------------------------------------------------
-            if sample_rng < 0.5:
+            if sample_rng < 0.7:
                 # Ensure cursor is far enough
                 while True:
                     cx = random.randint(margin, HP.IMAGE_SIZE - margin)
                     cy = random.randint(margin, HP.IMAGE_SIZE - margin)
-                    if math.hypot(cx-tx, cy-ty) > 100: break
+                    if math.hypot(cx-tx, cy-ty) > 50: break
                 
                 # Intent can be varied, instructions reflect user goal
                 sub_type = random.choice(["click", "move", "text"])
@@ -353,18 +365,18 @@ class SFTDataset(Dataset):
                 instr = instr_tmpl.format(name=target_name, content=intent.get("content", ""))
 
             # ----------------------------------------------------------
-            # CASE B: Direct Clicking (30%) - Force <CLICK>
+            # CASE B: Direct Clicking (15%) - Force <CLICK>
             # Cursor: ON target (<15px), may require slight adjustments.
             # Intent: Click
             # ----------------------------------------------------------
-            elif sample_rng < 0.9:
+            elif sample_rng < 0.85:
                 cx = tx + random.randint(-20, 20)
                 cy = ty + random.randint(-20, 20)
                 intent = {"type": "click", "name": target_name}
                 instr = random.choice(self.prompts_click).format(name=target_name)
 
             # ----------------------------------------------------------
-            # CASE C: Other Tasks (20%) - Text & Nav
+            # CASE C: Other Tasks (15%) - Text & Nav
             # ----------------------------------------------------------
             else:
                 # Split 50/50 between Text (Ready) and Nav
@@ -394,16 +406,6 @@ class SFTDataset(Dataset):
                 draw.rectangle([tx-30, ty-20, tx+30, ty+20], outline=random.choice(("green","black","blue","yellow","red")), width=3)
                 try: draw.text((tx-20, ty-35), target_name, fill=random.choice(("green","black","blue","yellow","red")))
                 except: pass
-            
-            # Draw Cursor
-            # 1. Crosshair lines
-            radius = 40
-            line_len = radius * 1.5
-            draw.line([(cx - line_len, cy), (cx + line_len, cy)], fill="red", width=10)
-            draw.line([(cx, cy - line_len), (cx, cy + line_len)], fill="red", width=10)
-            
-            # 2. Circle
-            draw.ellipse([(cx - radius, cy - radius), (cx + radius, cy + radius)], outline="red", width=10)
 
             # Draw Distractors (Noise)
             for _ in range(random.randint(2, 5)):
@@ -411,6 +413,10 @@ class SFTDataset(Dataset):
                 dy = random.randint(margin, HP.IMAGE_SIZE - margin)
                 if abs(dx - tx) > 60 or abs(dy - ty) > 60:
                     draw.rectangle([dx-30, dy-20, dx+30, dy+20], outline=random.choice(("green","black","blue","yellow","red")), width=3)
+
+            # Draw Cursor
+            from ..tools.visual_utils import draw_cursor
+            image = draw_cursor(image, cx, cy)
 
             # Generate Label
             cot_response = get_spatial_label_with_cot((cx, cy), (tx, ty), intent)
@@ -513,23 +519,18 @@ def setup_model_for_sft(model, processor):
         
         # === Vision Module Handling ===
         if "visual" in name:
-            # Unfreeze Projector (Merger/Adapter layers) to adapt visual tokens
-            if "merger" in name or "attn_pool" in name or "projector" in name:
-                param.requires_grad = True
-            # Freeze the main Vision Backbone (Patch embeddings, Blocks)
-            else:
-                param.requires_grad = False
+            param.requires_grad = False
         elif "embed_tokens" in name or "wte" in name:
             # Physically unfrozen, but logically restricted by hook
-            hidden_dim = param.shape[1]
-            trainable_params += len(action_token_ids) * hidden_dim
+            param.requires_grad = True
+            trainable_params += param.numel()
         else:
             param.requires_grad = True # Train LLM for Reasoning
             trainable_params += param.numel()
 
     print(f"[Model Setup] Total Params: {total_params:,}")
     print(f"[Model Setup] Trainable Params (Approx): {trainable_params:,}")
-    print("[Model Setup] Strategy: Vision(Merger) + Embeds(Train) + LLM(Train)")
+    print("[Model Setup] Strategy: Vision(Frozen) + Embeds(Train) + LLM(Train)")
     
 def run_sft():
     print(f"[SFT] Loading from {HP.INIT_MODEL_PATH}")
@@ -562,7 +563,8 @@ def run_sft():
         model=model, 
         args=args, 
         train_dataset=train_dataset, 
-        data_collator=collator
+        data_collator=collator,
+        processing_class=processor
     )
     
     print("[SFT] Starting Training with Action-Weighted Loss...")
