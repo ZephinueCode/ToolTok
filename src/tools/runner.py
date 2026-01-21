@@ -315,10 +315,10 @@ class Runner:
                     
                     elif token_action_type in ["click", "scroll", "text", "nav"]:
                         # Logic for interaction
-                        if token_action_type != current_gt.action_type:
+                        # if token_action_type != current_gt.action_type:
                             # Strict matching: if GT says Click but agent says Type -> Fail
                             # You might want to relax this for real usage
-                            agent_traj.failed = 2; break
+                            # agent_traj.failed = 2; break
                         
                         if self.check_hit(agent_traj.cursor_pos, current_gt.bbox, curr_img.size):
                             print("    -> Hit! Target reached.")

@@ -12,6 +12,7 @@ from .utils.action import ACTION_BASE_EMBEDDING
 from .train.sft import run_sft as run_sft_phase1
 from .train.sft2 import run_sft_screenspot as run_sft_phase2
 from .train.sft3 import run_sft_screenspot_pro as run_sft_phase3
+from .train.sft4 import run_sft_mind2web as run_sft_phase4
 
 if __name__ == "__main__":
     
@@ -36,7 +37,7 @@ if __name__ == "__main__":
         
         save_model(model, processor, HP.INIT_MODEL_PATH)
         print(f"PHASE 0 COMPLETE. Saved to: {HP.INIT_MODEL_PATH}")
-    
+        
     # =========================================================================
     # PHASE 1: SFT - Semantic Injection (Synthetic Data)
     # =========================================================================
@@ -63,8 +64,7 @@ if __name__ == "__main__":
         run_sft_phase2()
     else:
         print("[Main] Phase 2 output found. Skipping.")
-
-    '''
+    
     # =========================================================================
     # PHASE 3: SFT - Visual Grounding Pro (ScreenSpot Pro)
     # =========================================================================
@@ -72,12 +72,20 @@ if __name__ == "__main__":
     print("PHASE 3: SFT - Visual Grounding Pro")
     print("Action: Training on ScreenSpot Pro local dataset.")
     print("="*60 + "\n")
-
-    # run_sft_phase3()
+    
+    if not os.path.exists(HP.SFT_3_OUTPUT_PATH):
+        run_sft_phase3()
+    else:
+        print("[MAIN] Phase 3 output found. Skipping.")
     
     print("\n" + "="*60)
     # The final model is now the output of Phase 3
     final_path = getattr(HP, "SFT_3_OUTPUT_PATH", "./checkpoints/sft_phase3")
+    
+    if not os.path.exists(HP.SFT_4_OUTPUT_PATH):
+        run_sft_phase4()
+    else:
+        print("[MAIN] Phase 4 output found. Skipping.")
+    
     print(f"PIPELINE COMPLETE. Final Model: {final_path}")
     print("="*60 + "\n")
-    '''

@@ -12,12 +12,12 @@ class HYPERPARAMS:
     SFT_OUTPUT_PATH = "./checkpoints/Qwen3-VL-GUI-SFT"
     
     # Image
-    IMAGE_SIZE = 1024
+    IMAGE_SIZE = 1920
     
     # Optimization
     SFT_LEARN_RATE = 1.5e-5
-    SFT_BATCH_SIZE = 4
-    SFT_GRAD_ACCUM_STEPS = 4
+    SFT_BATCH_SIZE = 1
+    SFT_GRAD_ACCUM_STEPS = 8
     SFT_EPOCHS = 1
     SFT_MAX_LENGTH = 4096
     
@@ -39,7 +39,7 @@ class HYPERPARAMS:
     SFT_2_LEARN_RATE = 1e-5 # Slightly lower LR for Stage 2
     SFT_2_BATCH_SIZE = 1    # Images are heavy, smaller batch
     SFT_2_GRAD_ACCUM_STEPS = 8
-    SFT_2_EPOCHS = 4        # More epochs to learn visual features
+    SFT_2_EPOCHS = 3        # More epochs to learn visual features
 
     SFT_3_OUTPUT_PATH = "./checkpoints/Qwen3-VL-GUI-SFT-ScreenSpot-Pro"
     SCREENSPOT_PRO_TOTAL_SIZE = 1800
@@ -47,33 +47,24 @@ class HYPERPARAMS:
     SFT_3_LEARN_RATE = 5e-6 # Slightly lower LR for Stage 2
     SFT_3_BATCH_SIZE = 1    # Images are heavy, smaller batch
     SFT_3_GRAD_ACCUM_STEPS = 8
-    SFT_3_EPOCHS = 3        # More epochs to learn visual features
+    SFT_3_EPOCHS = 2        # More epochs to learn visual features
     
-    # ================= TRAINING PARAMS FOR GRPO1 =================
-    # GRPO1 (Easy grounding tasks with ScreenSpot)
-    GRPO1_DATA_PATH = "rootsautomation/ScreenSpot"
-    GRPO1_OUTPUT_PATH = "./checkpoints/Qwen3-VL-GUI-ScreenSpot-1"
-    
-    GRPO1_LEARN_RATE = 5e-6
-    GRPO1_BATCH_SIZE = 4
-    GRPO1_GRAD_ACCUM_STEPS = 1
-    GRPO1_NUM_GENERATIONS = 4
-    GRPO1_NUM_EPOCHS = 1  # Number of training epochs
-    GRPO1_LOGGING_STEPS = 1  # Log metrics every N steps
-    GRPO1_TEMPERATURE = 1.0  # Sampling temperature for generation
-    GRPO1_EVAL_STEPS = 50
-    GRPO1_SAVE_STEPS = 50
-    GRPO1_MAX_CHECKPOINTS = 2
-    GRPO_DATASET_SIZE = 600
-    
-    GRPO1_SEED = 1103
-    
-    # ================= TRAINING PARAMS FOR GRPO2 =================
-    # GRPO2 (Normal navigating tasks with AndroidControl)
-    
-    # ================= TRAINING PARAMS FOR GRPO3 =================
-    # GRPO3 (Hard navigating tasks with GUIOdyssey)
-    
+    SFT_4_INPUT_PATH = "./checkpoints/Qwen3-VL-GUI-SFT-ScreenSpot"
+    SFT_4_OUTPUT_PATH = "./checkpoints/Qwen3-VL-GUI-SFT-Mind2Web"
+
+    # Mind2Web Data Config
+    M2W_TOTAL_SIZE = 4000       # Reasonable size for SFT generalization
+    M2W_TRAIN_RATIO = 0.8       # 80% Train
+    M2W_EVAL_RATIO = 0.1        # 10% Eval
+    M2W_TEST_RATIO = 0.1
+    M2W_CACHE_PATH = "./data/mind2web_resized/"
+
+    # Training Config (Fine-tuning requires lower LR)
+    SFT_4_LEARN_RATE = 5e-6    
+    SFT_4_BATCH_SIZE = 1        
+    SFT_4_GRAD_ACCUM_STEPS = 8 # High accumulation for stability
+    SFT_4_EPOCHS = 2
+
     # ================= EVALUATION PARAMS =================
     VLM_API_KEY = "sk-e9d4a0b8248b4802b0458ca26612f25c"
     VLM_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -82,5 +73,5 @@ class HYPERPARAMS:
     # Evaluation Config
     EVAL_DATA_PATH = "rootsautomation/ScreenSpot"
     EVAL_DATASET_SIZE = 10 # Number of samples to test
-    EVAL_MAX_STEPS = 20
+    EVAL_MAX_STEPS = 30
     EVAL_OUTPUT_DIR = "./eval_results"

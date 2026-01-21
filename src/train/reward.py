@@ -62,12 +62,12 @@ def compute_reward(agent_traj) -> float:
         status_score = -1.0
         
     elif status == 2: 
-        # Wrong Action Type: -0.5
+        # Wrong Action Type: -0.8
         status_score = -0.8
         
     elif status == 4: 
         # Timeout: -0.15
-        status_score = -0.15
+        status_score = -0.6
         
     elif status == 3: 
         # Miss Logic

@@ -107,7 +107,7 @@ def generate_cot_for_step(cursor_pos, target_pos, instruction, next_action_token
     rel_tx, rel_ty = round(tx / w, 2), round(ty / h, 2)
     
     if c_region == t_region:
-        cot += f"Refining position... Cursor: [{rel_cx:.2f}, {rel_cy:.2f}], Target: [{rel_tx:.2f}, {rel_ty:.2f}] (relative). "
+        cot += f"Refining position... Cursor: [{rel_cx:.1f}, {rel_cy:.1f}], Target: [{rel_tx:.1f}, {rel_ty:.1f}] (relative). "
 
     # --- 3. Spatial Direction ---
     dx, dy = tx - cx, ty - cy
@@ -192,17 +192,20 @@ def get_shortest_path_actions_dynamic(start_pos, target_pos, img_size):
     return path
 
 # =============================================================================
-# 2. Weighted Trainer
+# 2. Weighted Trainer with Separate Logging
 # =============================================================================
 
 class WeightedActionTrainer(Trainer):
-    """Applies 100x loss weight to the Action Token."""
+    """
+    Applies custom weighting and Logs 'Action Loss' vs 'CoT Loss'.
+    """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.my_tokenizer = self.tokenizer if self.tokenizer else getattr(self, "processing_class", None)
         if hasattr(self.my_tokenizer, "tokenizer"):
             self.my_tokenizer = self.my_tokenizer.tokenizer
             
+        # Cache action token IDs
         self.valid_action_ids = set()
         for t in ACTION_TOKENS:
             ids = self.my_tokenizer.encode(t, add_special_tokens=False)
@@ -210,6 +213,7 @@ class WeightedActionTrainer(Trainer):
             ids_sp = self.my_tokenizer.encode(" " + t, add_special_tokens=False)
             if ids_sp: self.valid_action_ids.add(ids_sp[-1])
         
+        # Blacklist IDs for heuristic search
         self.im_end = self.my_tokenizer.convert_tokens_to_ids("<|im_end|>")
         self.eos = self.my_tokenizer.eos_token_id
         self.nl = 198
@@ -219,22 +223,28 @@ class WeightedActionTrainer(Trainer):
         outputs = model(**inputs)
         logits = outputs.get("logits")
 
-        # Free memory aggressively (Anti-OOM)
+        # Shift for Causal LM
         shift_logits = logits[..., :-1, :].contiguous()
         shift_labels = labels[..., 1:].contiguous()
         
-        # Explicitly delete original logits to free graph memory
+        # Clean up graph
         del logits
 
+        # 1. Calculate Per-Token Loss (Raw)
         loss_fct = torch.nn.CrossEntropyLoss(reduction='none')
+        # Shape: [Batch_Size, Seq_Len]
         raw_loss = loss_fct(shift_logits.view(-1, shift_logits.size(-1)), shift_labels.view(-1))
         raw_loss = raw_loss.view(labels.size(0), -1)
         
-        # Delete shift_logits after loss calculation
         del shift_logits
 
+        # 2. Build Weight Map
         weights = torch.ones_like(raw_loss)
-        ACTION_WEIGHT = 20.0 
+        # Using 20.0 as discussed
+        ACTION_WEIGHT = 80.0 
+        
+        # Masks for logging
+        action_mask_log = torch.zeros_like(raw_loss, dtype=torch.bool)
 
         for i in range(labels.size(0)):
             valid_mask = (shift_labels[i] != -100)
@@ -242,26 +252,61 @@ class WeightedActionTrainer(Trainer):
             
             if len(valid_idx) > 0:
                 target_idx = None
+                # Heuristic: Search last 15 tokens for Action
                 search = torch.flip(valid_idx, [0])[:15]
+                
+                # Pass 1: Exact Match
                 for idx in search:
                     if shift_labels[i, idx].item() in self.valid_action_ids:
                         target_idx = idx
                         break
+                
+                # Pass 2: Fallback (non-special tokens)
                 if target_idx is None:
                     for idx in search:
                         tid = shift_labels[i, idx].item()
                         if tid not in [self.im_end, self.eos, self.nl]:
                             target_idx = idx
                             break
+                
                 if target_idx is not None:
                     weights[i, target_idx] = ACTION_WEIGHT
+                    action_mask_log[i, target_idx] = True
 
+        # 3. Calculate Final Weighted Loss
         valid_mask = (shift_labels != -100).float()
         final_weights = weights * valid_mask
-        loss = (raw_loss * final_weights).sum() / (final_weights.sum() + 1e-8)
         
-        # Removed torch.cuda.empty_cache() to reduce fragmentation
-        return (loss, outputs) if return_outputs else loss
+        total_loss = (raw_loss * final_weights).sum() / (final_weights.sum() + 1e-8)
+
+        # 4. [NEW] Logging Logic: Split Action vs CoT
+        # We check if we are in a logging step
+        if self.state.global_step % self.args.logging_steps == 0:
+            with torch.no_grad():
+                # Action Loss: Avg loss of action tokens only
+                act_mask = action_mask_log & (shift_labels != -100)
+                if act_mask.sum() > 0:
+                    act_loss_val = (raw_loss * act_mask.float()).sum() / act_mask.sum()
+                else:
+                    act_loss_val = 0.0
+                
+                # CoT Loss: Avg loss of non-action tokens (but valid)
+                cot_mask = (~action_mask_log) & (shift_labels != -100)
+                if cot_mask.sum() > 0:
+                    cot_loss_val = (raw_loss * cot_mask.float()).sum() / cot_mask.sum()
+                else:
+                    cot_loss_val = 0.0
+                
+                # Print to console (Simple & Effective)
+                if self.is_world_process_zero():
+                    print(
+                        f"\n[Step {self.state.global_step}] "
+                        f"Total Weighted: {total_loss.item():.4f} | "
+                        f"Action Loss: {act_loss_val:.4f} | "
+                        f"CoT Loss: {cot_loss_val:.4f}"
+                    )
+
+        return (total_loss, outputs) if return_outputs else total_loss
 
 # =============================================================================
 # 3. Dataset & Collator
@@ -314,9 +359,9 @@ class ScreenSpotSFTDataset(Dataset):
     def _process_sample(self, sample):
         raw_img = sample['image'].convert("RGB")
         
-        # --- [NEW] 1. Resize if too large ---
+        # --- Resize if too large ---
         orig_w, orig_h = raw_img.size
-        MAX_SIDE = 1280
+        MAX_SIDE = 1600 # Slightly larger for better OCR
         
         if max(orig_w, orig_h) > MAX_SIDE:
             scale = MAX_SIDE / max(orig_w, orig_h)
@@ -324,23 +369,18 @@ class ScreenSpotSFTDataset(Dataset):
             new_h = int(orig_h * scale)
             raw_img = raw_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
         else:
-            scale = 1.0 # No resizing needed
+            scale = 1.0
             
-        # Get current dimensions
         w, h = raw_img.size
         
-        # --- 2. Parse BBox & Scale Coordinates ---
+        # --- BBox & Coordinates ---
         bbox = sample.get('bbox', sample.get('point', [0,0]*2))
         if len(bbox) == 2: bbox = [bbox[0], bbox[1], bbox[0], bbox[1]]
         
         if all(0.0 <= c <= 1.0 for c in bbox):
-            # Normalized coordinates (0.0-1.0)
-            # Safe to apply directly to new w/h
             tx = int((bbox[0]*w + bbox[2]*w)/2)
             ty = int((bbox[1]*h + bbox[3]*h)/2)
         else:
-            # Absolute coordinates (pixels)
-            # Must scale them if image was resized
             if scale != 1.0:
                 tx = int(((bbox[0] + bbox[2])/2) * scale)
                 ty = int(((bbox[1] + bbox[3])/2) * scale)
@@ -348,15 +388,14 @@ class ScreenSpotSFTDataset(Dataset):
                 tx = int((bbox[0] + bbox[2])/2)
                 ty = int((bbox[1] + bbox[3])/2)
                 
-        # Clamp to bounds
         tx = max(0, min(w-1, tx))
         ty = max(0, min(h-1, ty))
 
-        # 3. Generate Full Path
+        # --- Path Generation ---
         center_x, center_y = w // 2, h // 2
         full_path = get_shortest_path_actions_dynamic((center_x, center_y), (tx, ty), (w, h))
         
-        # 4. Select Step & Build History
+        # --- Step Selection ---
         if not full_path:
             action_token = "<CLICK_SHORT>"
             history_tokens = []
@@ -380,7 +419,7 @@ class ScreenSpotSFTDataset(Dataset):
             
             curr_pos = (curr_cx, curr_cy)
 
-        # 5. Format History for USER PROMPT
+        # --- Prompt Formatting ---
         if not history_tokens:
             history_str = "None (Start)"
         else:
@@ -388,7 +427,7 @@ class ScreenSpotSFTDataset(Dataset):
         
         user_content = f"[Action] Task: {sample['instruction']}\nPrevious Actions: {history_str}"
 
-        # 6. Visualization & CoT
+        # --- Vis & CoT ---
         image = draw_cursor(raw_img, curr_pos[0], curr_pos[1])
         
         cot = generate_cot_for_step(
@@ -417,12 +456,17 @@ def run_sft_screenspot():
         return
 
     print(f"[SFT-2] Loading model from {HP.SFT_2_INPUT_PATH}...")
+    # NOTE: device_map="auto" REMOVED for DDP/Accelerate compatibility
     model = Qwen3VLForConditionalGeneration.from_pretrained(
-        HP.SFT_2_INPUT_PATH, device_map="auto", torch_dtype=torch.bfloat16, trust_remote_code=True
+        HP.SFT_2_INPUT_PATH, torch_dtype=torch.bfloat16, trust_remote_code=True
     )
     processor = AutoProcessor.from_pretrained(HP.SFT_2_INPUT_PATH, trust_remote_code=True)
     
+    # Gradient Checkpointing (Save VRAM)
+    model.gradient_checkpointing_enable()
     model.enable_input_require_grads()
+    
+    # Freeze Visual, Train LLM + Embeddings
     model.get_input_embeddings().weight.requires_grad = True
     for name, param in model.named_parameters():
         if "visual" in name: param.requires_grad = False
@@ -439,7 +483,7 @@ def run_sft_screenspot():
         gradient_accumulation_steps=HP.SFT_2_GRAD_ACCUM_STEPS,
         learning_rate=HP.SFT_2_LEARN_RATE,
         bf16=True,
-        logging_steps=5,
+        logging_steps=5, # Logs will appear every 5 steps
         save_strategy="steps",
         eval_strategy="steps",
         save_steps=240,
@@ -452,6 +496,7 @@ def run_sft_screenspot():
         gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False},
         prediction_loss_only=True,
+        warmup_ratio=0.1
     )
     
     trainer = WeightedActionTrainer(
@@ -459,7 +504,7 @@ def run_sft_screenspot():
         data_collator=collator, processing_class=processor
     )
     
-    print("[SFT-2] Starting Training with Action History & Resized Images...")
+    print("[SFT-2] Starting Training with Detailed Loss Logging...")
     trainer.train()
     
     trainer.save_model(HP.SFT_2_OUTPUT_PATH)

@@ -67,7 +67,7 @@ class WeightedActionTrainer(Trainer):
         raw_loss = raw_loss.view(batch_size, -1)
 
         weights = torch.ones_like(raw_loss)
-        ACTION_WEIGHT = 10.0
+        ACTION_WEIGHT = 40.0
 
         for i in range(batch_size):
             valid_mask = (shift_labels[i] != -100)
@@ -510,7 +510,7 @@ def setup_model_for_sft(model, processor):
 def run_sft():
     print(f"[SFT] Loading from {HP.INIT_MODEL_PATH}")
     model = Qwen3VLForConditionalGeneration.from_pretrained(
-        HP.INIT_MODEL_PATH, device_map="auto", torch_dtype=torch.bfloat16, trust_remote_code=True
+        HP.INIT_MODEL_PATH, torch_dtype=torch.bfloat16, trust_remote_code=True
     )
     processor = AutoProcessor.from_pretrained(HP.INIT_MODEL_PATH, trust_remote_code=True)
     

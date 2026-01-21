@@ -12,7 +12,9 @@ from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 
 from ..utils.parameters import HYPERPARAMS as HP
 # Use the Pro version manager which handles local paths
-from ..utils.sft_screenspot_pro import ScreenSpotDataManager
+# from ..utils.sft_screenspot import ScreenSpotDataManager
+# from ..utils.sft_screenspot_pro import ScreenSpotDataManager
+from ..utils.sft_m2w import Mind2WebDataManager as ScreenSpotDataManager
 from ..tools.runner import Runner
 from ..train.reward import batch_compute_rewards
 from ..tools.visual_utils import visualize_trajectory
@@ -197,7 +199,7 @@ def evaluate_model(mode="trained", limit=None, model_path=None, bbox_expansion=N
                     input_text=sample['instruction'],
                     ground_truth_data=ground_truth_data,
                     max_steps=HP.EVAL_MAX_STEPS, 
-                    temperature=0.7 
+                    temperature=0.75
                 )
 
             # --- Metrics ---
@@ -290,10 +292,10 @@ if __name__ == "__main__":
     # Example Usage:
     
     # 1. Evaluate Grounding Baseline (Qwen-VL)
-    # evaluate_model(mode="grounding_baseline", limit=20, bbox_expansion=0.05)
+    # evaluate_model(mode="grounding_baseline", limit=120, bbox_expansion=0.05)
     
     # 2. Evaluate API Baseline (GPT-4o)
-    # evaluate_model(mode="api_baseline", limit=10, bbox_expansion=0.05)
+    # evaluate_model(mode="api_baseline", limit=20, bbox_expansion=0.05)
     
     # 3. Evaluate Local SFT Model (Phase 3)
-    evaluate_model(mode="trained", limit=20, bbox_expansion=0.05, model_path=HP.SFT_2_OUTPUT_PATH)
+    evaluate_model(mode="trained", limit=100, bbox_expansion=0.07, model_path=HP.SFT_4_OUTPUT_PATH)
