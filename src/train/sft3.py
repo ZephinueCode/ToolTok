@@ -84,7 +84,7 @@ def get_shortest_path_actions_dynamic(start_pos: Tuple[int, int], target_pos: Tu
 
 class WeightedActionTrainer(Trainer):
     """
-    Applies custom weighting (50x) to Action Tokens and logs split losses.
+    Applies custom weighting (60x) to Action Tokens and logs split losses.
     """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -171,6 +171,14 @@ class WeightedActionTrainer(Trainer):
                         cot_loss_val = (raw_loss * cot_mask.float()).sum() / cot_mask.sum()
                     else:
                         cot_loss_val = 0.0
+                    
+                    if self.is_world_process_zero():
+                        print(
+                            f"\n[Step {self.state.global_step}] "
+                            f"Total: {total_loss.item():.4f} | "
+                            f"Act Loss: {act_loss_val:.4f} | "
+                            f"CoT Loss: {cot_loss_val:.4f}"
+                        )
 
             return (total_loss, outputs) if return_outputs else total_loss
 
@@ -226,32 +234,36 @@ class ScreenSpotProSFTDataset(Dataset):
         # 1. Load Image
         try:
             image_path = sample['image_path']
-            # No Resize: ScreenSpot Pro relies on high-res details
             raw_img = Image.open(image_path).convert("RGB")
         except Exception:
             raw_img = Image.new("RGB", (HP.IMAGE_SIZE, HP.IMAGE_SIZE), (0, 0, 0))
         
-        # Safety resize if extremely large to prevent OOM
+        # --- Resizing Logic (Updated) ---
         orig_w, orig_h = raw_img.size
-        MAX_SIDE = 1600
-        if max(orig_w, orig_h) > MAX_SIDE:
-            scale = MAX_SIDE / max(orig_w, orig_h)
+        curr_max_dim = max(orig_w, orig_h)
+        
+        target_max_side = 1600
+
+        scale = 1.0
+        if curr_max_dim > target_max_side:
+            scale = target_max_side / curr_max_dim
             new_w = int(orig_w * scale)
             new_h = int(orig_h * scale)
             raw_img = raw_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-        else:
-            scale = 1.0
         
         w, h = raw_img.size
         
-        # 2. Get Target BBox
+        # 2. Get Target BBox & Scale Coordinates
         bbox = sample.get('bbox', None)
         if bbox:
             abs_x1, abs_y1, abs_x2, abs_y2 = bbox[0], bbox[1], bbox[2], bbox[3]
-            # If resized, we must scale bbox too? 
-            # Assuming dataset bbox is absolute to original image.
+            
+            # Apply scaling factor if image was resized
             if scale != 1.0:
-                abs_x1, abs_y1, abs_x2, abs_y2 = [c * scale for c in bbox]
+                abs_x1 *= scale
+                abs_y1 *= scale
+                abs_x2 *= scale
+                abs_y2 *= scale
 
             tx = int((abs_x1 + abs_x2) / 2)
             ty = int((abs_y1 + abs_y2) / 2)
@@ -260,13 +272,41 @@ class ScreenSpotProSFTDataset(Dataset):
         else:
             tx, ty = w // 2, h // 2
 
-        # 3. Path Planning
-        center_x, center_y = w // 2, h // 2
-        full_path = get_shortest_path_actions_dynamic((center_x, center_y), (tx, ty), (w, h))
+        # 3. Path Planning with Randomized Start (Updated)
+        # 50% Random, 40% Opposite Corner (Adversarial), 10% Center
+        rand_val = random.random()
+        
+        if rand_val < 0.1:
+            # Random Position
+            start_x = random.randint(0, w - 1)
+            start_y = random.randint(0, h - 1)
+        elif rand_val < 0.2:
+            # Opposite corner logic to force FAR tokens
+            margin_w = max(10, int(w * 0.1))
+            margin_h = max(10, int(h * 0.1))
+            
+            if tx < w // 2: 
+                start_x = random.randint(w - margin_w, w - 1)
+            else:           
+                start_x = random.randint(0, margin_w)
+            
+            if ty < h // 2: 
+                start_y = random.randint(h - margin_h, h - 1)
+            else:           
+                start_y = random.randint(0, margin_h)
+        else:
+            # Traditional Center Start
+            start_x, start_y = w // 2, h // 2
+            
+        # Clamp to bounds
+        start_x = max(0, min(w-1, start_x))
+        start_y = max(0, min(h-1, start_y))
+
+        full_path = get_shortest_path_actions_dynamic((start_x, start_y), (tx, ty), (w, h))
         
         # 4. Step Sampling
         if not full_path:
-            curr_pos = (center_x, center_y)
+            curr_pos = (start_x, start_y)
             action_token = "<CLICK_SHORT>"
             history_tokens = []
         else:
@@ -279,7 +319,7 @@ class ScreenSpotProSFTDataset(Dataset):
             action_token = target_step[0]
             
             history_tokens = []
-            curr_cx, curr_cy = center_x, center_y
+            curr_cx, curr_cy = start_x, start_y
             
             for i in range(step_idx):
                 h_token, (nx, ny) = full_path[i]
@@ -363,8 +403,8 @@ def run_sft_screenspot_pro():
         logging_steps=5,
         save_strategy="steps",
         eval_strategy="steps",
-        save_steps=100, # Frequent saving for complex task
-        eval_steps=100,
+        save_steps=150, # Frequent saving for complex task
+        eval_steps=150,
         save_total_limit=2,
         load_best_model_at_end=True,
         metric_for_best_model="eval_loss",

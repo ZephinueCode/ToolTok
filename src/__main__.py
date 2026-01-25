@@ -51,7 +51,7 @@ if __name__ == "__main__":
         run_sft_phase1()
     else:
         print("[Main] Phase 1 output found. Skipping.")
-    
+        
     # =========================================================================
     # PHASE 2: SFT - Visual Grounding (Legacy ScreenSpot)
     # =========================================================================
@@ -68,6 +68,8 @@ if __name__ == "__main__":
     # =========================================================================
     # PHASE 3: SFT - Visual Grounding Pro (ScreenSpot Pro)
     # =========================================================================
+    
+    '''
     print("\n" + "="*60)
     print("PHASE 3: SFT - Visual Grounding Pro")
     print("Action: Training on ScreenSpot Pro local dataset.")
@@ -81,7 +83,10 @@ if __name__ == "__main__":
     print("\n" + "="*60)
     # The final model is now the output of Phase 3
     final_path = getattr(HP, "SFT_3_OUTPUT_PATH", "./checkpoints/sft_phase3")
-    
+    '''
+        
+    # Mind2Web
+    '''
     if not os.path.exists(HP.SFT_4_OUTPUT_PATH):
         run_sft_phase4()
     else:
@@ -89,3 +94,4 @@ if __name__ == "__main__":
     
     print(f"PIPELINE COMPLETE. Final Model: {final_path}")
     print("="*60 + "\n")
+    '''

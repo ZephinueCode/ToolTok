@@ -359,18 +359,22 @@ class ScreenSpotSFTDataset(Dataset):
     def _process_sample(self, sample):
         raw_img = sample['image'].convert("RGB")
         
-        # --- Resize if too large ---
+        # --- Random Resizing Logic ---
         orig_w, orig_h = raw_img.size
-        MAX_SIDE = 1600 # Slightly larger for better OCR
+        curr_max_dim = max(orig_w, orig_h)
         
-        if max(orig_w, orig_h) > MAX_SIDE:
-            scale = MAX_SIDE / max(orig_w, orig_h)
+        # Decide target size based on probability
+        target_max_side = 1600
+
+        # Calculate scale and resize if needed
+        scale = 1.0
+        if curr_max_dim > target_max_side:
+            scale = target_max_side / curr_max_dim
             new_w = int(orig_w * scale)
             new_h = int(orig_h * scale)
             raw_img = raw_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-        else:
-            scale = 1.0
-            
+        
+        # Update width/height for coordinate calculation
         w, h = raw_img.size
         
         # --- BBox & Coordinates ---
@@ -378,9 +382,11 @@ class ScreenSpotSFTDataset(Dataset):
         if len(bbox) == 2: bbox = [bbox[0], bbox[1], bbox[0], bbox[1]]
         
         if all(0.0 <= c <= 1.0 for c in bbox):
+            # If normalized, use new width/height directly
             tx = int((bbox[0]*w + bbox[2]*w)/2)
             ty = int((bbox[1]*h + bbox[3]*h)/2)
         else:
+            # If absolute, apply scale factor
             if scale != 1.0:
                 tx = int(((bbox[0] + bbox[2])/2) * scale)
                 ty = int(((bbox[1] + bbox[3])/2) * scale)
@@ -391,17 +397,51 @@ class ScreenSpotSFTDataset(Dataset):
         tx = max(0, min(w-1, tx))
         ty = max(0, min(h-1, ty))
 
+        # --- [NEW] Randomized Start Position Logic ---
+        # 1. 50% Random Position: Simulates mid-task state
+        # 2. 40% Opposite Corner: Forces LONG distance (FAR tokens)
+        # 3. 10% Center: Simulates clean start
+        
+        rand_val = random.random()
+        
+        if rand_val < 0.1:
+            start_x = random.randint(0, w - 1)
+            start_y = random.randint(0, h - 1)
+        elif rand_val < 0.2:
+            # Opposite corner logic to force FAR tokens
+            # If target is Left (0..w/2), start at Right edge
+            # If target is Top (0..h/2), start at Bottom edge
+            margin_w = max(10, int(w * 0.1))
+            margin_h = max(10, int(h * 0.1))
+            
+            if tx < w // 2: 
+                start_x = random.randint(w - margin_w, w - 1)
+            else:           
+                start_x = random.randint(0, margin_w)
+            
+            if ty < h // 2: 
+                start_y = random.randint(h - margin_h, h - 1)
+            else:           
+                start_y = random.randint(0, margin_h)
+        else:
+            # Traditional Center Start
+            start_x, start_y = w // 2, h // 2
+            
+        # Clamp to bounds just in case
+        start_x = max(0, min(w-1, start_x))
+        start_y = max(0, min(h-1, start_y))
+
         # --- Path Generation ---
-        center_x, center_y = w // 2, h // 2
-        full_path = get_shortest_path_actions_dynamic((center_x, center_y), (tx, ty), (w, h))
+        # Use the randomized start position
+        full_path = get_shortest_path_actions_dynamic((start_x, start_y), (tx, ty), (w, h))
         
         # --- Step Selection ---
         if not full_path:
             action_token = "<CLICK_SHORT>"
             history_tokens = []
-            curr_pos = (center_x, center_y)
+            curr_pos = (start_x, start_y)
         else:
-            if random.random() < 0.33:
+            if random.random() < 0.2:
                 step_idx = len(full_path) - 1
             else:
                 step_idx = random.randint(0, max(0, len(full_path) - 2))
@@ -410,7 +450,8 @@ class ScreenSpotSFTDataset(Dataset):
             action_token = target_step[0]
             
             history_tokens = []
-            curr_cx, curr_cy = center_x, center_y
+            # Initialize loop from randomized start
+            curr_cx, curr_cy = start_x, start_y
             
             for i in range(step_idx):
                 h_token, (nx, ny) = full_path[i]

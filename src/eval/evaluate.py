@@ -12,9 +12,10 @@ from transformers import Qwen3VLForConditionalGeneration, AutoProcessor
 
 from ..utils.parameters import HYPERPARAMS as HP
 # Use the Pro version manager which handles local paths
-# from ..utils.sft_screenspot import ScreenSpotDataManager
+from ..utils.sft_screenspot import ScreenSpotDataManager
 # from ..utils.sft_screenspot_pro import ScreenSpotDataManager
-from ..utils.sft_m2w import Mind2WebDataManager as ScreenSpotDataManager
+# from ..utils.sft_screenspot_v2 import ScreenSpotDataManager
+# from ..utils.sft_m2w import Mind2WebDataManager as ScreenSpotDataManager
 from ..tools.runner import Runner
 from ..train.reward import batch_compute_rewards
 from ..tools.visual_utils import visualize_trajectory
@@ -141,11 +142,34 @@ def evaluate_model(mode="trained", limit=None, model_path=None, bbox_expansion=N
             if raw_img is None:
                 print(f"[Skip] No valid image found for sample {i}")
                 continue
-
+            
+            # TODO: Resolution robustness check.
+            
             w, h = raw_img.size
+            
+            # '''
+            # max_side = max(w, h)
+            # target_size = 1000
+            # scale_factor = target_size / max_side
+            # new_w = int(w * scale_factor)
+            # new_h = int(h * scale_factor)
+            # raw_img = raw_img.resize((new_w, new_h), Image.LANCZOS)
+            # w, h = raw_img.size
+            
+            # target_size = (1000, 1500)
+            # new_w = target_size[0]
+            # new_h = target_size[1]
+            # raw_img = raw_img.resize((new_w, new_h), Image.LANCZOS)
+            # w, h = raw_img.size
+            # '''
             
             # --- Prepare BBox ---
             bbox = sample.get('bbox', None)
+            # print(f"[EVAL] Sample {i}: Image Name = {sample.get('img_filename', 'N/A')}, Image Size = {w}x{h}")
+            # if not bbox:
+            #     print("No BBox found in sample data.")
+            # else:
+            #     print(bbox)
             if not bbox and 'point' in sample:
                 p = sample['point']
                 bbox = [p[0], p[1], p[0], p[1]]
@@ -161,7 +185,12 @@ def evaluate_model(mode="trained", limit=None, model_path=None, bbox_expansion=N
                     ]
                 else:
                     # Already Absolute
-                    final_bbox = bbox
+                    final_bbox = [
+                        bbox[0], bbox[1],
+                        bbox[0] + bbox[2], bbox[1] + bbox[3]
+                    ]
+                    # final_bbox = [x * scale_factor for x in final_bbox]
+                    # print(f"[Hint] Already absolute bbox detected. {final_bbox}")
 
             # Relax BBox Standards
             if bbox_expansion > 0 and final_bbox != [0,0,0,0]:
@@ -292,10 +321,11 @@ if __name__ == "__main__":
     # Example Usage:
     
     # 1. Evaluate Grounding Baseline (Qwen-VL)
-    # evaluate_model(mode="grounding_baseline", limit=120, bbox_expansion=0.05)
-    
+    # evaluate_model(mode="grounding_baseline", limit=80, bbox_expansion=0)
+
     # 2. Evaluate API Baseline (GPT-4o)
-    # evaluate_model(mode="api_baseline", limit=20, bbox_expansion=0.05)
-    
+    # evaluate_model(mode="api_baseline", limit=100, bbox_expansion=0.07)
+
     # 3. Evaluate Local SFT Model (Phase 3)
-    evaluate_model(mode="trained", limit=100, bbox_expansion=0.07, model_path=HP.SFT_4_OUTPUT_PATH)
+    evaluate_model(mode="trained", limit=100, bbox_expansion=0.07, model_path="./checkpoints/Qwen3-VL-GUI-SFT-ScreenSpot-New2")
+    # evaluate_model(mode="trained", limit=100, bbox_expansion=0.07, model_path=HP.SFT_3_OUTPUT_PATH)

@@ -18,9 +18,11 @@ from transformers.models.qwen2_vl.image_processing_qwen2_vl import smart_resize
 # Import your existing utilities
 from ..utils.parameters import HYPERPARAMS as HP
 from ..tools.visual_utils import visualize_trajectory
-# [FIX] Added GTStep to imports
 from ..tools.runner import AgentTrajectory, GTTrajectory, GTStep
 from ..train.reward import batch_compute_rewards
+
+# [NEW] Import the prompt from utils
+from ..utils.prompts import BASELINE_GROUNDING_PROMPT
 
 # =============================================================================
 # 1. Holo2 Specific Logic (Copied & Adapted from Cookbook)
@@ -44,19 +46,22 @@ class Holo2Predictor:
         self.device = self.model.device
 
     def get_chat_messages(self, task: str, image: Image.Image) -> list[dict]:
-        """Create the prompt structure for navigation task"""
-        # Hardcoded schema string as per cookbook
-        schema_json = ClickCoordinates.model_json_schema()
-        prompt = f"""Localize an element on the GUI image according to the provided target and output a click position. 
-        * You must output a valid JSON following the format: {schema_json} 
-        Your target is:"""
+        """Create the prompt structure for navigation task using Baseline Prompt"""
+        
+        # [MODIFIED] Use BASELINE_GROUNDING_PROMPT instead of hardcoded schema
+        # Holo2 coordinates are 0-1000, so we inject that into the prompt template
+        system_prompt = BASELINE_GROUNDING_PROMPT.replace("{WIDTH}", "1000").replace("{HEIGHT}", "1000")
 
         return [
+            {
+                "role": "system",
+                "content": system_prompt
+            },
             {
                 "role": "user",
                 "content": [
                     {"type": "image", "image": image},
-                    {"type": "text", "text": f"{prompt}\n{task}"},
+                    {"type": "text", "text": f"User Query: {task}"},
                 ],
             },
         ]
@@ -125,14 +130,45 @@ class Holo2Predictor:
         content, thinking = self.parse_reasoning(generated_ids)
         
         # 5. Extract JSON
+        # Note: If the model adheres to the Baseline Prompt, it might output a <tool_call> or similar.
+        # This parser currently attempts to find a JSON object.
         try:
             # Strip Markdown code blocks if present
             clean_content = content.replace("```json", "").replace("```", "").strip()
+            
+            # [ADAPTATION] If model outputs tool call style but we want coords:
+            # Attempt generic JSON parse first.
             action = ClickCoordinates.model_validate_json(clean_content)
             return {"x": action.x, "y": action.y}, thinking
         except Exception as e:
-            print(f"[Holo2 Error] JSON Parse failed: {content} | Error: {e}")
-            return None, thinking
+            content = content.strip()
+            Lbrace_index = content.rfind('{')
+
+            if Lbrace_index != -1:
+                content = content[Lbrace_index:]
+                Rbrace_index = content.find('}')
+                if Rbrace_index != -1:
+                    content = content[:Rbrace_index + 1]
+                    try:
+                        # Attempt to map potential "coordinate": [x, y] to x, y if structure differs
+                        data = json.loads(content)
+                        if "x" in data and "y" in data:
+                             return {"x": data["x"], "y": data["y"]}, thinking
+                        elif "coordinate" in data and isinstance(data["coordinate"], list):
+                             return {"x": data["coordinate"][0], "y": data["coordinate"][1]}, thinking
+                        
+                        # Fallback to Pydantic
+                        action = ClickCoordinates.model_validate_json(content)
+                        return {"x": action.x, "y": action.y}, thinking
+                    except Exception as second_exception:
+                        print(f"[Holo2 Error] Second JSON Parse failed: {content} | Error: {second_exception}")
+                        return None, thinking
+                else:
+                    print("[Holo2 Error] No closing '}' found in content.")
+                    return None, thinking
+            else:
+                print("[Holo2 Error] No '{' field found in content.")
+                return None, thinking
 
 # =============================================================================
 # 2. Evaluation Main Loop
@@ -168,6 +204,10 @@ def eval_holo2(dataset_name, limit=None, model_path="Hcompany/Holo2-4B", bbox_ex
     elif dataset_name == "mind2web":
         from ..utils.sft_m2w import Mind2WebDataManager
         dm = Mind2WebDataManager()
+        dataset = dm.raw_test
+    elif dataset_name == "screenspot_v2":
+        from ..utils.sft_screenspot_v2 import ScreenSpotDataManager
+        dm = ScreenSpotDataManager()
         dataset = dm.raw_test
     else:
         raise ValueError("Unknown dataset")
@@ -213,7 +253,10 @@ def eval_holo2(dataset_name, limit=None, model_path="Hcompany/Holo2-4B", bbox_ex
             if all(0.0 <= x <= 1.0 for x in bbox):
                 final_bbox = [bbox[0]*w, bbox[1]*h, bbox[2]*w, bbox[3]*h]
             else:
-                final_bbox = bbox
+                final_bbox = [
+                    bbox[0], bbox[1],
+                    bbox[0] + bbox[2], bbox[1] + bbox[3]
+                ]
         
         # BBox Expansion (Relaxation)
         if bbox_expansion > 0:
@@ -253,7 +296,6 @@ def eval_holo2(dataset_name, limit=None, model_path="Hcompany/Holo2-4B", bbox_ex
             action_text = f"click({int(pred_abs_x)}, {int(pred_abs_y)})"
 
         # 5. Construct Synthetic Trajectory for Compatibility
-        # [FIX] Initialize GTStep so AgentTrajectory has a valid base image
         start_step = GTStep(
             image=raw_img,
             bbox=final_bbox,
@@ -316,7 +358,7 @@ def eval_holo2(dataset_name, limit=None, model_path="Hcompany/Holo2-4B", bbox_ex
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset", type=str, default="screenspot", choices=["screenspot", "screenspot_pro", "mind2web"])
+    parser.add_argument("--dataset", type=str, default="screenspot", choices=["screenspot", "screenspot_pro", "mind2web", "screenspot_v2"])
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--model_path", type=str, default="./checkpoints/Holo2-4B")
     parser.add_argument("--expansion", type=float, default=0.05)

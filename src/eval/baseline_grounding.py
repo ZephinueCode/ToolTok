@@ -113,8 +113,8 @@ class BaselineGroundingRunner(Runner):
             orig_w, orig_h = current_view.size 
             
             # [CRITICAL] Resize to 1000x1000 for the model
-            target_size = (1000, 1000)
-            resized_view = current_view.resize(target_size, Image.Resampling.LANCZOS)
+            target_size = (750, 1500)
+            resized_view = current_view #.resize(target_size, Image.Resampling.LANCZOS)
             
             base64_img = encode_image_to_base64(resized_view)
 

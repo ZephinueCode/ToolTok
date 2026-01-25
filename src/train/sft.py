@@ -298,7 +298,7 @@ class SFTDataset(Dataset):
             for _ in range(limit):
                 try:
                     sample = next(iterator)
-                    img = sample['image'].convert("RGB").resize((HP.IMAGE_SIZE, HP.IMAGE_SIZE))
+                    img = sample['image'].convert("RGB")
                     images.append(img)
                 except StopIteration:
                     break
@@ -309,7 +309,9 @@ class SFTDataset(Dataset):
     def get_random_background(self):
         if self.bg_images:
             return random.choice(self.bg_images).copy()
-        return Image.new("RGB", (HP.IMAGE_SIZE, HP.IMAGE_SIZE), (0, 0, 0))
+        w = random.randint(600, 1280)
+        h = random.randint(600, 1280)
+        return Image.new("RGB", (w, h), (0, 0, 0))
 
     def __len__(self):
         return self.total_len
@@ -510,7 +512,8 @@ def setup_model_for_sft(model, processor):
 def run_sft():
     print(f"[SFT] Loading from {HP.INIT_MODEL_PATH}")
     model = Qwen3VLForConditionalGeneration.from_pretrained(
-        HP.INIT_MODEL_PATH, torch_dtype=torch.bfloat16, trust_remote_code=True
+        HP.INIT_MODEL_PATH, torch_dtype=torch.bfloat16, trust_remote_code=True,
+        device_map="auto"
     )
     processor = AutoProcessor.from_pretrained(HP.INIT_MODEL_PATH, trust_remote_code=True)
     
