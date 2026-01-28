@@ -3,13 +3,14 @@
 class HYPERPARAMS:
     # ================= PATHS =================
     BASE_MODEL_PATH = "./checkpoints/Qwen3-VL-4B-Instruct"
-    INIT_MODEL_PATH = "./checkpoints/Qwen3-VL-GUI-Init"
+    # INIT_MODEL_PATH = "./checkpoints/Qwen3-VL-GUI-Init"
+    INIT_MODEL_PATH = "./checkpoints/Qwen3-VL-4B-Instruct"
 
     # ================= TRAINING PARAMS FOR SFT =================
     # SFT (Semantic injection)
     SFT_SAMPLES_PER_ACTION = 90
     SFT_DATA_PATH = "./data/sft.jsonl"
-    SFT_OUTPUT_PATH = "./checkpoints/Qwen3-VL-GUI-SFT-New"
+    SFT_OUTPUT_PATH = "./checkpoints/Qwen3-VL-GUI-SFT-Loss-Curve"
     
     # Image
     IMAGE_SIZE = 1920
