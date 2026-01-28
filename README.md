@@ -18,4 +18,6 @@ If your machine cannot handle 4K resolution images, please refer to ``src/utils/
 python -m src.eval.evaluate
 ```
 
-You should setup 
+You should setup testing in ``src.eval.evaluate`` before processing. Select testing dataset on top by un-commenting the desired data collator. Use ```grounding_baseline`` to test ``Qwen3-VL`` based **visual grounding** models. Use ``api_baseline`` to test ``Qwen3-VL`` based **zero shot pathfinding** models. Use ``trained`` to test our models.
+
+Additionally, if you want to test ``Holo2-4B`` or locally provided ``Qwen3-VL-4B``, refer to ``src/eval/eval_holo2.py``. Usage is similar to ``evaluate.py``.
