@@ -324,8 +324,8 @@ if __name__ == "__main__":
     # evaluate_model(mode="grounding_baseline", limit=80, bbox_expansion=0)
 
     # 2. Evaluate API Baseline (GPT-4o)
-    # evaluate_model(mode="api_baseline", limit=100, bbox_expansion=0.07)
+    # evaluate_model(mode="api_baseline", limit=100, bbox_expansion=0)
 
     # 3. Evaluate Local SFT Model (Phase 3)
-    evaluate_model(mode="trained", limit=100, bbox_expansion=0.07, model_path="./checkpoints/Qwen3-VL-GUI-SFT-ScreenSpot-New2")
-    # evaluate_model(mode="trained", limit=100, bbox_expansion=0.07, model_path=HP.SFT_3_OUTPUT_PATH)
+    evaluate_model(mode="trained", limit=100, bbox_expansion=0, model_path="./checkpoints/Qwen3-VL-GUI-SFT-ScreenSpot-New2")
+    # evaluate_model(mode="trained", limit=100, bbox_expansion=0, model_path=HP.SFT_3_OUTPUT_PATH)
