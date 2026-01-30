@@ -1,5 +1,13 @@
 # ToolTok: Tool Tokenization for Efficient and Generalizable GUI Agents
 
+## Description
+
+![main](./main_new.png)
+
+![main](./vis1.png)
+
+![main](./vis2.png)
+
 ## Train (You might want to setup accelerate)
 
 ``` shell
