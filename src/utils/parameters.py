@@ -68,7 +68,7 @@ class HYPERPARAMS:
     SFT_4_EPOCHS = 2
 
     # ================= EVALUATION PARAMS =================
-    VLM_API_KEY = "sk-e9d4a0b8248b4802b0458ca26612f25c"
+    VLM_API_KEY = "" # ENTER YOUR API-KEY HERE
     VLM_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     BASELINE_MODEL_NAME = "qwen3-vl-8b-instruct"
     
